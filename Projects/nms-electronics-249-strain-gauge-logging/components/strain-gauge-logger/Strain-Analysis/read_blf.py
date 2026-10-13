@@ -277,7 +277,7 @@ def main():
     p.add_argument("source", nargs="?",
                    help="a .blf file, a folder, or a drive like E: (default: find the SD card)")
     p.add_argument("--all", action="store_true", help="summarise every log in the folder, not just the newest")
-    p.add_argument("--copy", action="store_true", help=f"copy the logs into {RAW_DIR}")
+    p.add_argument("--copy", action="store_true", help="copy the logs into Strain-Logs/raw-sd-data/")
     p.add_argument("--csv", help="write the CSV here instead of Strain-Logs/CSV/ (single file only)")
     p.add_argument("--no-csv", action="store_true", help="don't save CSVs")
     args = p.parse_args()
