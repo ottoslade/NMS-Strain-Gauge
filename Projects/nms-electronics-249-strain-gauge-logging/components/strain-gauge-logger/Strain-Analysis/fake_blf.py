@@ -131,7 +131,8 @@ def default_out_path(when):
     """Strain-Logs/strain_gauge_log_YYYY-MM-DD_HH-MM-SS.blf next to this script,
     with _2, _3, ... added if that name is already taken."""
     log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Strain-Logs")
-    base = os.path.join(log_dir, f"strain_gauge_log_{when:%Y-%m-%d_%H-%M-%S}")
+    os.makedirs(log_dir, exist_ok=True)
+    base =os.path.join(log_dir, f"strain_gauge_log_{when:%Y-%m-%d_%H-%M-%S}")
     path, n = base + ".blf", 2
     while os.path.exists(path):
         path, n = f"{base}_{n}.blf", n + 1

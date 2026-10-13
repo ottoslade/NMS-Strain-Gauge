@@ -1,0 +1,32 @@
+# ---- Log data ----
+# .blf logs and decoded CSVs are generated (fake_blf.py, read_blf.py) or
+# copied off the SD card, and can be large. Keep the folders, not the data.
+Strain-Logs/**
+!Strain-Logs/
+!Strain-Logs/*/
+!Strain-Logs/**/.gitkeep
+# To commit a specific log anyway: git add -f Strain-Logs/<file>
+
+# ---- Build output ----
+# check_blf.py compiles this on first run
+fw_check/fw_writer
+fw_check/fw_writer.exe
+*.o
+*.obj
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
