@@ -1,11 +1,14 @@
 # ---- Log data ----
 # Strain-Logs/raw-sd-data/  .blf logs copied off the SD card or made by fake_blf.py
 # Strain-Logs/CSV/          CSVs decoded by read_blf.py
+# Strain-Logs/Strain/       microstrain CSVs from strain.py
 # Both are data, not code, and can be large. Keep the folders, not the files.
 Strain-Logs/raw-sd-data/*
 !Strain-Logs/raw-sd-data/.gitkeep
 Strain-Logs/CSV/*
 !Strain-Logs/CSV/.gitkeep
+Strain-Logs/Strain/*
+!Strain-Logs/Strain/.gitkeep
 # Anything else dropped straight into Strain-Logs/
 Strain-Logs/*.blf
 Strain-Logs/*.csv

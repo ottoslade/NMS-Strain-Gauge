@@ -3,8 +3,8 @@
 Tools for analysing the voltage data recorded by the Nittany Motorsports **Strain Gauge Logger** (SGL). The logger samples six strain gauges every 1 ms and saves them to its SD card as `.blf` files. The scripts here read those files, turn them into CSVs and plain Python arrays, and generate realistic fake logs so the analysis can be developed without hardware.
 
 ```
-SD card (.blf)  ──►  read_blf.py  ──►  Strain-Logs/CSV/*.csv   or   numpy arrays in your code
-                       ▲
+SD card (.blf)  ──►  read_blf.py  ──►  Strain-Logs/CSV/*.csv  ──►  strain.py  ──►  Strain-Logs/Strain/*_strain.csv
+                       ▲               (volts, per ms)                           (microstrain, per ms)
 fake_blf.py  ──────────┘   (dummy logs, same format as the card)
 check_blf.py               (proves a .blf matches the firmware's format byte for byte)
 ```
@@ -18,6 +18,7 @@ check_blf.py               (proves a .blf matches the firmware's format byte for
   - [read_blf.py](#read_blfpy)
   - [fake_blf.py](#fake_blfpy)
   - [check_blf.py](#check_blfpy)
+  - [strain.py](#strainpy)
 - [Using the Data in Python](#using-the-data-in-python)
 - [File Formats](#file-formats)
 - [Firmware Quirks](#firmware-quirks)
@@ -37,6 +38,7 @@ Strain-Analysis/
 ├── read_blf.py          Read .blf logs (SD card or disk), print a summary, save CSVs
 ├── fake_blf.py          Generate dummy .blf logs in the exact firmware format
 ├── check_blf.py         Byte-compare .blf files against the firmware's write code
+├── strain.py            Convert gauge voltages to microstrain, ms by ms (hardware constants at the top)
 ├── fw_check/            PC build of the firmware's BLF writer, used by check_blf.py
 │   ├── fw_writer.c      Write path copied from Core/Src/main.c, Core/Src/blf.c and the HAL RTC driver
 │   ├── blf.h            Copy of shared/blf/blf.h (the BLF structs)
@@ -45,7 +47,8 @@ Strain-Analysis/
 │   └── ff.h             Stub, so blf.h compiles without FatFs
 └── Strain-Logs/
     ├── raw-sd-data/     .blf logs copied off the SD card, or made by fake_blf.py
-    └── CSV/             CSVs decoded by read_blf.py
+    ├── CSV/             CSVs decoded by read_blf.py (volts)
+    └── Strain/          CSVs from strain.py (microstrain)
 ```
 
 The contents of `Strain-Logs/` are not committed to git (see `.gitignore`); only the empty folders are. To commit a specific log anyway, use `git add -f Strain-Logs/raw-sd-data/<file>`.
@@ -151,6 +154,49 @@ The first run compiles `fw_check/fw_writer.exe` with gcc. Use `--rebuild` after 
 `fw_check/blf.h` is a copy of `shared/blf/blf.h` from the nms-electronics repo. When run inside that repo, `check_blf.py` warns if the original has changed; copy it over again and use `--rebuild`.
 
 Use `check_blf.py` to confirm that the dummy logs are still realistic after changing `fake_blf.py`, and to inspect real card files once you have them. It checks the files, not `read_blf.py`.
+
+### strain.py
+
+Converts the logged voltages to strain at each gauge, one row per millisecond. It takes the CSVs from `read_blf.py`, or `.blf` logs directly, and writes `Strain-Logs/Strain/<name>_strain.csv`.
+
+```bash
+python strain.py Strain-Logs/CSV/*.csv
+python strain.py Strain-Logs/raw-sd-data/some_log.blf
+```
+
+```
+t_s,gauge1_ue,gauge2_ue,gauge3_ue,gauge4_ue,gauge5_ue,gauge6_ue
+0.00000,-738.83,728.81,1406.33,-1408.37,1377.86,-1364.92
+0.00100,-690.05,694.57,1430.82,-1447.33,1397.44,-1394.15
+```
+
+Values are microstrain (µε, 1e-6 m/m), with tension positive. For each gauge, the script also prints the zero voltage it used, the min/max strain, and how many readings were clipped at the ADC limits.
+
+**The hardware constants are placeholders.** Nothing in the repo records the analog front end, so the `GAUGES` list at the top of `strain.py` holds assumed values. Every run prints a warning until they're checked and `CONSTANTS_VERIFIED = True` is set. Each of the six gauges has its own entry:
+
+| Constant | Placeholder | Where to find the real value |
+|---|---|---|
+| `bridge` | `"quarter"` | How the gauges are wired: `quarter`, `half_bending`, `half_poisson`, `full_bending`, `full_poisson` |
+| `gauge_factor` | `2.0` | Gauge datasheet or packaging |
+| `excitation_v` | `3.3` | Board schematic: the bridge supply voltage |
+| `amp_gain` | `100.0` | Board schematic: the instrumentation amplifier's gain resistor |
+| `zero_v` | `None` | ADC voltage at zero strain. `None` averages the first `ZERO_WINDOW_S` (0.5 s) of each log, so the part must be unloaded then. Set a number to use a fixed calibration instead. |
+| `polarity` | `+1` | Flip to `-1` if tension reads negative for how a gauge is wired |
+| `lead_ohms`, `gauge_ohms` | `0.0`, `350.0` | Quarter bridge only: lead wire resistance and gauge resistance |
+
+There are also shared settings: `POISSON_RATIO` (`0.3`, for the Poisson bridges), `ZERO_WINDOW_S`, and the clipping thresholds `ADC_MIN_V` and `ADC_MAX_V`.
+
+The conversion is `V_bridge = (V_adc − zero_v) / amp_gain`, then `Vr = V_bridge / excitation_v`, then the standard (NI) bridge equation for the bridge type. That includes the nonlinear terms, so large strains stay accurate. Each equation was checked by simulating a bridge at ±1,500 µε and 20,000 µε and confirming the original strain comes back exactly.
+
+The fake logs aren't at rest during their first 0.5 s, so automatic zeroing gives arbitrary offsets on them. Only the shape of the strain trace is meaningful for dummy data.
+
+From Python:
+
+```python
+from strain import strain_from_csv
+t, ue = strain_from_csv("Strain-Logs/CSV/strain_gauge_log_2026-10-06_23-09-25.csv")
+ue[2][100]   # gauge 3 at t[100], in microstrain
+```
 
 ## Using the Data in Python
 
