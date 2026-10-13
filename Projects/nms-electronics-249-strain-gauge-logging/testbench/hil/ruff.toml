@@ -1,0 +1,76 @@
+#                    #
+#    Linter Rules    #
+#                    #
+
+# Exclude commonly ignored directories.
+exclude = [
+    ".pytest_cache",
+    ".venv",
+    ".vscode",
+]
+
+# line length is long because of descriptive failures
+line-length = 100
+indent-width = 4
+
+# Assume Python 3.11
+target-version = "py311"
+
+[lint]
+select = [
+    "E",        # general error catching
+    "UP",       # pyupgrade general linting
+    "F",        # pyflakes general linting
+    "PT",       # pytest specific linting
+    "ANN",      # require annotations
+    "N",        # naming conventions
+    "D103",     # tests should have docstrings
+    "B",        # common bug patterns
+    "I",        # import sorting
+    "SIM",      # simplify patterns
+]
+
+ignore = [
+    "E711",     # allow 'x ==/!= None'
+    "E722",     # allow bare excepts
+    "E305",     # don't enforce 2 blank lines between functions
+    "N806",     # allow uppercase names for constants (apps/brakes)
+    "E402",     # don't require module level imports at top of file
+    "F405",     # let us import from *
+    "F403",     # let us import *
+    "B010",     # allow `setattr`
+]
+
+# Allow fix for all enabled rules (when `--fix`) is provided.
+fixable = ["ALL"]
+unfixable = []
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[format]
+# Like Black, use double quotes for strings.
+quote-style = "double"
+
+# Like Black, indent with spaces, rather than tabs.
+indent-style = "space"
+
+# Like Black, respect magic trailing commas.
+skip-magic-trailing-comma = false
+
+# Like Black, automatically detect the appropriate line ending.
+line-ending = "auto"
+
+# Enable auto-formatting of code examples in docstrings. Markdown,
+# reStructuredText code/literal blocks and doctests are all supported.
+#
+# This is currently disabled by default, but it is planned for this
+# to be opt-out in the future.
+docstring-code-format = false
+
+# Set the line length limit used when formatting code snippets in
+# docstrings.
+#
+# This only has an effect when the `docstring-code-format` setting is
+# enabled.
+docstring-code-line-length = "dynamic"

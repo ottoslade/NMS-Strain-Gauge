@@ -1,0 +1,38 @@
+repos:
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  # Ruff version.
+  rev: v0.12.7
+  hooks:
+    # Run the linter.
+    - id: ruff-check
+      args: [ --fix ]
+      files: testbench/hil
+    # Run the formatter.
+    - id: ruff-format
+      files: testbench/hil
+# ensure lockfile is up to date with config file
+- repo: https://github.com/astral-sh/uv-pre-commit
+  # uv version.
+  rev: 0.8.24
+  hooks:
+    - id: uv-lock
+      args: [--project, testbench/hil]
+- repo: local
+  hooks:
+    # python type checker
+    - id: ty-check
+      name: ty-check
+      language: python
+      entry: python scripts/ty_check.py
+      pass_filenames: false
+      args: [--project, testbench/hil]
+      additional_dependencies:
+        - uv
+    # C format checker
+    - id: clang-format
+      name: clang-format
+      entry: python scripts/clang_format.py 
+      language: python
+      # Install clang-format in the virtual environment
+      additional_dependencies: ['clang-format==21.1.8']
+      pass_filenames: false

@@ -1,0 +1,78 @@
+name: build-components
+
+on:
+  pull_request:
+
+jobs:
+  build-components:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install Arm GNU Toolchain (arm-none-eabi-gcc) 13.2.rel1
+        uses: carlosperate/arm-none-eabi-gcc-action@v1
+        with:
+          release: '13.2.Rel1'
+
+      - name: Install ESP-IDF
+        shell: bash
+        run: |
+          IDF_DIR="$GITHUB_WORKSPACE/shared/esp-idf"
+          if [ ! -d "$IDF_DIR" ]; then
+            echo "ERROR: $IDF_DIR not found"
+            exit 1
+          fi
+          # run install from the esp-idf directory so relative paths inside install.sh work
+          (cd "$IDF_DIR" && ./install.sh)
+          # persist IDF_PATH for later steps
+          echo "IDF_PATH=$IDF_DIR" >> $GITHUB_ENV
+          # source for this step so export.sh runs now
+          # shellcheck source=/dev/null
+          . "$IDF_DIR/export.sh"
+
+      - name: Build bootloaders/stm32f446re-bootloader
+        if: always()
+        shell: bash
+        run: |
+          make -C components/bootloaders/stm32f446re-bootloader
+
+      - name: Build ecu-front
+        if: always()
+        shell: bash
+        run: |
+          make -C components/ecu-front
+      
+      - name: Build ecu-rear
+        if: always()
+        shell: bash
+        run: |
+          make -C components/ecu-rear
+
+      - name: Build hv-bms
+        if: always()
+        shell: bash
+        run: |
+          make -C components/hv-bms
+
+      - name: Build lv-bms
+        if: always()
+        shell: bash
+        run: |
+          make -C components/lv-bms
+      
+      - name: Build tcu
+        if: always()
+        shell: bash
+        run: |
+          . "$GITHUB_WORKSPACE/shared/esp-idf/export.sh"
+          cd "components/tcu" && idf.py build
+
+      - name: Build telemetry-station
+        if: always()
+        shell: bash
+        run: |
+          . "$GITHUB_WORKSPACE/shared/esp-idf/export.sh"
+          cd "components/telemetry-station" && idf.py build

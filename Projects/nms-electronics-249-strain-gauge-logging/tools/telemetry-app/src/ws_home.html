@@ -1,0 +1,146 @@
+<!DOCTYPE HTML>
+<html>
+
+<head>
+    <script src="chart.min.js"></script>
+    <title>NMS Telemetry</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        html {
+            font-family: New Times Roman;
+            text-align: center;
+        }
+
+        h1 {
+            font-size: 1.8rem;
+            color: white;
+        }
+
+        .topnav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 20px;
+            background-color: #04296d;
+        }
+
+        body {
+            margin: 0;
+        }
+
+        .graphs {
+            display: flex;
+            flex-wrap: wrap;
+        }
+
+        .chart-container {
+            display: none;
+            width: 45vw;
+            height: 50vh;
+            margin-bottom: 4vh;
+            margin-right: 3vw;
+        }
+
+        .dropdown {
+            position: relative;
+            display: inline-block;
+        }
+
+        .dropbtn {
+            color: #04296d;
+            background-color: white;
+            padding: 10px;
+            font-size: 16px;
+            border: none;
+            cursor: pointer;
+        }
+
+        .dropbtn:hover, .dropbtn:focus {
+            background-color: gray;
+        }
+
+        .dropdown-content {
+            display: none;
+            position: absolute;
+            background-color: #f9f9f9;
+            min-width: 160px;
+            box-shadow: 0px 8px 16px 0px rgba(0, 0, 0, 0.2);
+            z-index: 1;
+        }
+
+        .dropdown-content label {
+            color: black;
+            padding: 12px 16px;
+            text-decoration: none;
+            display: block;
+            text-align: start;
+            cursor: pointer;
+        }
+
+        .dropdown-content label:hover {
+            background-color: #f1f1f1;
+        }
+
+        .dropdown.show .dropdown-content {
+            display: block;
+        }
+
+        .table-container {
+            margin-top: 20px;
+            overflow-x: auto;
+        }
+
+        #data-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        #data-table th,
+        #data-table td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: center;
+        }
+
+        #graphSearch {
+            box-sizing: border-box;
+            padding: 6px;
+            margin-bottom: 4px;
+        }
+    </style>
+</head>
+
+<body>
+<div class="topnav">
+    <h1>NMS Telemetry</h1>
+    <div class="dropdown">
+        <button class="dropbtn">Select Graphs</button>
+        <div class="dropdown-content">
+            <input type="text" id="graphSearch" placeholder="Search graphs..." style="width: 90%; margin: 8px;">
+            <!-- Your labels go here -->
+        </div>
+    </div>
+</div>
+
+
+<div class="table-container">
+    <table id="data-table">
+        <thead>
+        <tr>
+            <th>Timestamp</th>
+            <th>Signal</th>
+            <th>Value</th>
+        </tr>
+        </thead>
+        <tbody>
+        </tbody>
+    </table>
+</div>
+
+<div class="graphs">
+</div>
+</body>
+
+<script src="ws_home.js"></script>
+
+</html>

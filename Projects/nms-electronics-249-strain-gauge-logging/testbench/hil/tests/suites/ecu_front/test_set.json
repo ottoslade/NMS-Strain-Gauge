@@ -1,0 +1,11 @@
+{
+  "order": [
+    "test_flash_ecu_front.py",
+    "test_apps.py",
+    "test_brakes.py",
+    "test_apps_brake_plaus.py",
+    "test_ready_to_drive.py",
+    "test_apps_torque_limiter.py",
+    "test_eeprom.py"
+  ]
+}

@@ -1,0 +1,53 @@
+[project]
+name = "hil"
+version = "0.1.0"
+description = "Nittany Motorsports HIL Testing"
+readme = "README.md"
+requires-python = "~=3.11.0"
+dependencies = [
+    "cantools>=40.2.3",
+    "firmware-flasher",
+    "pytest>=8.4.1",
+    "python-can>=4.5.0",
+    "rpi-gpio>=0.7.1 ; sys_platform == 'linux'",
+    "smbus3>=0.5.5",
+    "types-rpi-gpio>=0.7.0.20250801",
+]
+
+[tool.pytest.ini_options]
+pythonpath = [
+    ".",
+]
+testpaths = ["tests/suites"]
+
+# Enable pytest "live logging" so logging.from logging.* is printed while tests run
+log_cli = true
+log_cli_level = "INFO"
+
+# Show timestamp, level, logger name and function that emitted the log
+log_cli_format = "%(asctime)s [%(levelname)s] %(name)s.%(funcName)s: %(message)s"
+log_date_format = "%Y-%m-%d %H:%M:%S"
+
+# Default root logging level (affects captured logs shown on failures as well)
+log_level = "INFO"
+
+# If you also want test print() calls and stdout/stderr to appear live, uncomment:
+# capture = "no"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.3.0",
+    "ruff>=0.14.4",
+    "ty==0.0.14",
+]
+
+[tool.ty.rules]
+# o.w rpi library throws error on windows
+unresolved-import = "ignore"
+
+# If any of these packages are ever edited, you'll need to
+# reinstall them with `uv remove ...` and `uv add ...`.
+# Editable packages would remove the need to do this but they don't typecheck.
+[tool.uv.sources]
+firmware-flasher = { path = "../../tools/firmware_flasher" }
+

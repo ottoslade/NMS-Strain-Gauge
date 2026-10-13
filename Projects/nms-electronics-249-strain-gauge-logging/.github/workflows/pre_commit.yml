@@ -1,0 +1,35 @@
+name: pre-commit
+
+on: pull_request
+
+jobs:
+  run-pre-commit-hooks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pre-commit uv
+          sudo apt-get update
+          sudo apt-get install -y wget
+
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 21
+          sudo apt-get install -y clang-format-21
+
+          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-21 100
+          sudo update-alternatives --set clang-format /usr/bin/clang-format-21
+
+      - name: Run all pre-commit hooks
+        run: |
+          pre-commit run --all-files

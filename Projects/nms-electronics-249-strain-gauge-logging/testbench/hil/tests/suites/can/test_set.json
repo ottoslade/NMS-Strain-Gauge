@@ -1,0 +1,6 @@
+{
+  "order": [
+    "test_can.py",
+    "test_vcan.py"
+  ]
+}

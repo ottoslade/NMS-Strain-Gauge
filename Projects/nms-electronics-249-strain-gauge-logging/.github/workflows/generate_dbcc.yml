@@ -1,0 +1,59 @@
+# .github/workflows/generate_dbcc.yml
+
+name: generate-dbcc
+
+on:
+  push:
+    branches:
+      - '**' # Run on any branch
+
+jobs:
+  build-and-generate:
+    if: "contains(github.event.head_commit.message, '(generate dbcc)')"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed for the auto-commit step
+
+    steps:
+      - name: 'Checkout Repository'
+        uses: actions/checkout@v4
+
+      - name: 'Set up Build Environment'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+
+      - name: 'Compile DBCC Library'
+        run: |
+          echo "Compiling dbcc..."
+          make -C tools/dbcc
+          echo "Compilation complete."
+          
+      - name: 'Move Executable'
+        run: |
+          echo "Moving compiled executable to shared directory..."
+          mkdir -p shared/dbc_to_c/program
+          mv tools/dbcc/dbcc shared/dbc_to_c/program/
+          echo "Executable moved."
+
+      - name: 'Set up Python Environment'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: 'Make Scripts Executable'
+        run: |
+          chmod +x shared/dbc_to_c/program/dbcc
+          chmod +x shared/dbc_to_c/DBCtoCgenerator.py
+        
+      - name: 'Run DBC to C Generator Script'
+        run: |
+          echo "Running Python generator script..."
+          cd shared/dbc_to_c
+          python3 DBCtoCgenerator.py
+          echo "Script execution complete."
+
+      - name: 'Commit and Push Generated Files'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "task: auto-generate C and JSON files from DBC"
+          file_pattern: "shared/dbc_to_c/generated_code/*"
+          commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"

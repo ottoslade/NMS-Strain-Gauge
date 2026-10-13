@@ -1,0 +1,12 @@
+[project]
+name = "firmware_flasher"
+version = "1.0.0"
+description = "Nittany Motorsports STM32 Firmware Flasher"
+requires-python = ">=3.10.0"
+dependencies = [
+    "packaging==25.0",
+    "pyserial==3.5",
+    "python-can==4.6.1",
+    "typing_extensions==4.15.0",
+    "wrapt==1.17.3",
+]

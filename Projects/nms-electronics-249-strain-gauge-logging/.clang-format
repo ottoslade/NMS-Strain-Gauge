@@ -1,0 +1,109 @@
+# .clang-format
+#
+# A sample .clang-format file for C-based firmware projects.
+# This configuration is based on the Microsoft style, with specific overrides.
+#
+# To use this file, place it in the root directory of your project.
+# Clang-Format will automatically find and use it.
+#
+# For a full list of options, see the official documentation:
+# https://clang.llvm.org/docs/ClangFormatStyleOptions.html
+
+BasedOnStyle: Microsoft
+
+#------------------------------------------------------------------------------
+# General Formatting
+#------------------------------------------------------------------------------
+
+ColumnLimit: 100
+IndentWidth: 2
+TabWidth: 2
+UseTab: Never
+
+#------------------------------------------------------------------------------
+# Pointer and Reference Alignment
+#------------------------------------------------------------------------------
+
+# This setting applies to both pointers (*) and references (&).
+# Your current setting is 'Right'.
+#
+# Pointer examples:
+# int* p;  // Left
+# int * p; // Middle
+# int *p;  // Right (current)
+PointerAlignment: Right
+
+# Reference examples (for C++):
+# int& r;  // Left
+# int & r; // Middle
+# int &r;  // Right (current)
+ReferenceAlignment: Right
+
+#------------------------------------------------------------------------------
+# Brace Wrapping
+#------------------------------------------------------------------------------
+
+# Places all opening braces on a new line (Allman style).
+# This is the default for the Microsoft style, but is kept for clarity.
+#
+# Example (Allman):
+# void my_function()
+# {
+#     ...
+# }
+#
+BreakBeforeBraces: Allman
+
+AllowShortFunctionsOnASingleLine: None
+AllowShortBlocksOnASingleLine: false
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+
+#------------------------------------------------------------------------------
+# Function and Control Statements
+#------------------------------------------------------------------------------
+
+# If false, prevents arguments from being packed onto one line.
+BinPackArguments: false
+BinPackParameters: true
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+PenaltyBreakAssignment: 1000
+
+# Aligns arguments with the opening parenthesis on function calls.
+AlignAfterOpenBracket: Align
+
+SpaceBeforeParens: ControlStatements
+SpaceAfterCStyleCast: false
+
+# Prevent force indentation in .h files
+IndentPPDirectives: None
+IndentExternBlock: NoIndent
+
+#------------------------------------------------------------------------------
+# Include Directives
+#------------------------------------------------------------------------------
+
+# Sorts #include directives alphabetically.
+# By removing IncludeCategories and IncludeBlocks, all includes will be
+# sorted into a single block.
+SortIncludes: true
+
+#------------------------------------------------------------------------------
+# Comments
+#------------------------------------------------------------------------------
+
+ReflowComments: false
+
+#------------------------------------------------------------------------------
+# C-Specific Options
+#------------------------------------------------------------------------------
+
+IndentCaseLabels: true
+AlwaysBreakTemplateDeclarations: 'Yes' # Applies to function return types in C
+
+#------------------------------------------------------------------------------
+# Macros
+#------------------------------------------------------------------------------
+
+AlignConsecutiveMacros: Consecutive

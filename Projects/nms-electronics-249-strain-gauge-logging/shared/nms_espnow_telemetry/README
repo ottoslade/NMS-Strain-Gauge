@@ -1,0 +1,7 @@
+This is the NMS ESP-NOW telemetry library. It configures both receiving and transmitting over ESP-NOW on ESP32s.
+In your implementation for a chip you must define:
+espnow_channel: Which WiFi channel the ESP32 should be communicating on (search 2.4GHz WiFi channels for more info, TLDR is that ESPs should be on the same channel to communicate and 1, 6, and 11 are safe guesses for good channels to use)
+broadcast_mac: MAC address of the device to send messages to, set to {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF} for broadcasting to any device
+
+You can put messages into a queue to be transmitted using telemetryTx().
+You can tell the library how to process messages using processRcvMsg(). This will run on every received message, so be aware of message types if more than CAN messages are ever added.

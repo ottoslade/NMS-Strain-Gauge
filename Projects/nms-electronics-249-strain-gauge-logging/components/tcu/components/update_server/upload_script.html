@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>NMS OTA Updates</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f4f4f4;
+        }
+
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            text-align: center;
+            width: 600px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+
+        h2 {
+            margin-bottom: 20px;
+        }
+
+        label {
+            font-weight: bold;
+        }
+
+        input[type="file"] {
+            margin: 10px 0;
+            width: 80%;
+        }
+
+        /* Style for the button container */
+        .button-container {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        #responseMessage {
+            margin-top: 20px;
+            font-size: 16px;
+            color: green;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>NMS OTA Updates</h2>
+        <label for="newfile">Upload a .bin file</label><br>
+        <input id="newfile" type="file" accept=".bin"><br>
+
+        <!-- Button container placed in a single row -->
+        <div class="button-container">
+            <button onclick="uploadTo('F')">Front Flash</button>
+            <button onclick="uploadTo('R')">Rear Flash</button>
+            <button onclick="uploadTo('E')">ESP Flash</button>
+        </div>
+
+        <!-- This div will display the response message -->
+        <div id="responseMessage"></div>
+    </div>
+
+    <script>
+        window.onload = function () {
+            const msg = sessionStorage.getItem('responseMessage');
+            const color = sessionStorage.getItem('responseColor');
+            if (msg) {
+                const box = document.getElementById("responseMessage");
+                box.textContent = msg;
+                box.style.color = color || 'black';
+
+                // Clear the message so it doesn't persist on future reloads
+                sessionStorage.removeItem('responseMessage');
+                sessionStorage.removeItem('responseColor');
+            }
+        };
+
+        function uploadTo(target) {
+            const fileInput = document.getElementById("newfile").files;
+
+            if (fileInput.length === 0) {
+                alert("No file selected!");
+                return;
+            }
+
+            const file = fileInput[0];
+            const fileName = file.name;
+            const MAX_FILE_SIZE = 2000 * 1024;
+
+            if (fileName.indexOf(' ') >= 0) {
+                alert("File name cannot contain spaces!");
+                return;
+            }
+
+            if (file.size > MAX_FILE_SIZE) {
+                alert("File size must be less than 200KB!");
+                return;
+            }
+
+            const targetName = {
+                'F': 'Front STM',
+                'R': 'Rear STM',
+                'E': 'ESP32'
+            }[target];
+
+            const confirmed = confirm(`Are you sure to flash ${targetName} with "${fileName}"?`);
+            if (!confirmed) return;
+
+            const upload_path = `/flash/${target}/${fileName}`;
+            const xhttp = new XMLHttpRequest();
+
+            // Show the loading message
+            document.getElementById("responseMessage").style.color = "black"
+            document.getElementById("responseMessage").textContent = "OTA Update in process... Please wait.";
+
+            xhttp.onreadystatechange = function () {
+                if (xhttp.readyState === 4) {
+                    let responseMessage = '';
+
+                    if (xhttp.status === 200) {
+                        responseMessage = `${xhttp.responseText} to ${targetName}!`;
+                        messageColor = "green";  // Success color
+
+                        if (targetName === 'ESP32')
+                        {
+                            responseMessage += ` ESP32 will reset, so make sure to reconnect to the WiFi if needed.`
+                        }
+
+                        // Save message and color to sessionStorage
+                        sessionStorage.setItem('responseMessage', responseMessage);
+                        sessionStorage.setItem('responseColor', messageColor);
+
+                        // Reload the page after short delay
+                        setTimeout(() => {
+                            location.reload();
+                        }, 1500);
+                    } else if (xhttp.status === 0) {
+                        responseMessage = "OTA Update request timed out (try reconnecting to WiFi)!";
+                        messageColor = "red";  // Error color
+
+                        document.getElementById("responseMessage").style.color = messageColor;
+                        document.getElementById("responseMessage").textContent = responseMessage;
+                    } else if (xhttp.status === 400){
+                        responseMessage = `FILE UPLOAD FAILED: ${xhttp.responseText}`;
+                        messageColor = "red";  // Error color
+
+                        // Save message and color to sessionStorage
+                        sessionStorage.setItem('responseMessage', responseMessage);
+                        sessionStorage.setItem('responseColor', messageColor);
+
+                        // Reload the page after short delay
+                        setTimeout(() => {
+                            location.reload();
+                        }, 1500);
+                    } else if (xhttp.status === 500) {
+                        responseMessage = `${xhttp.responseText} to ${targetName}!`;
+                        messageColor = "red";  // Error color
+
+                        // Save message and color to sessionStorage
+                        sessionStorage.setItem('responseMessage', responseMessage);
+                        sessionStorage.setItem('responseColor', messageColor);
+
+                        // Reload the page after short delay
+                        setTimeout(() => {
+                            location.reload();
+                        }, 1500);
+                    } else {
+                        responseMessage = "Unexpected server response!";
+                        messageColor = "red";  // Error color
+
+                        document.getElementById("responseMessage").style.color = messageColor;
+                        document.getElementById("responseMessage").textContent = responseMessage;
+                    }
+                    
+                }
+            };
+
+            xhttp.timeout = 30000;
+
+            xhttp.open("POST", upload_path, true);
+            xhttp.send(file);
+        }
+    </script>
+</body>
+</html>
