@@ -6,17 +6,22 @@ is needed; numpy is used by StrainLog.as_array() if it is installed.
     python read_blf.py                      # find the SD card, summarise the newest log
     python read_blf.py E:                   # same, for a specific drive
     python read_blf.py E: --all             # summarise every log on the card
-    python read_blf.py E: --copy            # copy the card's logs into Strain-Logs/
-    python read_blf.py Strain-Logs/x.blf --csv x.csv   # CSV somewhere else
-    python read_blf.py Strain-Logs --all --no-csv      # summaries only
+    python read_blf.py E: --copy            # copy the card's logs into Strain-Logs/raw-sd-data/
+    python read_blf.py Strain-Logs/raw-sd-data --all   # every log already copied (or fake)
+    python read_blf.py Strain-Logs/raw-sd-data/x.blf --csv x.csv   # CSV somewhere else
+    python read_blf.py Strain-Logs/raw-sd-data --all --no-csv      # summaries only
+
+Folders:
+    Strain-Logs/raw-sd-data/   .blf logs (copied off the card, or from fake_blf.py)
+    Strain-Logs/CSV/           decoded CSVs (t_s, gauge1_v .. gauge6_v)
 
 Every log read from the command line is also saved as a CSV in
-Strain-Logs/CSV/ (t_s, gauge1_v .. gauge6_v), unless --no-csv is given.
+Strain-Logs/CSV/, unless --no-csv is given.
 
 From your own code:
 
     from read_blf import read_log
-    log = read_log("Strain-Logs/strain_gauge_log_000.blf")
+    log = read_log("Strain-Logs/raw-sd-data/strain_gauge_log_000.blf")
     log.t            # list of sample times in seconds from the start of the file
     log.gauges[0]    # gauge 1 voltages (gauges[0] .. gauges[5])
     t, v = log.as_array()   # numpy: t shape (N,), v shape (N, 6)
@@ -41,7 +46,8 @@ CAN_IDS = (0x320, 0x321, 0x322)  # gauges 1-2, 3-4, 5-6
 NORTC = datetime.datetime(2026, 3, 1)  # header date when the RTC was never synced
 LOG_GLOB = "strain_gauge_log_*.blf"
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Strain-Logs")
-CSV_DIR = os.path.join(LOG_DIR, "CSV")
+RAW_DIR = os.path.join(LOG_DIR, "raw-sd-data")  # .blf files (copied off the card, or fake)
+CSV_DIR = os.path.join(LOG_DIR, "CSV")          # decoded CSVs
 
 FILE_HEADER = struct.Struct("<4sI8BQQII8H8H72x")  # 144 B
 BASE_HEADER = struct.Struct("<4sHHII")            # 16 B
@@ -176,10 +182,11 @@ def _log_number(path):
 
 
 def list_logs(folder):
-    """Log files in a folder, oldest first: firmware logs by their 000-999
-    number, anything else (fake logs, copies) by modification time."""
+    """Log files in a folder, oldest first, by modification time. Files with
+    the same time (on the SD card FatFs gives every file the same fixed
+    timestamp) fall back to the firmware's 000-999 number."""
     return sorted(glob.glob(os.path.join(folder, LOG_GLOB)),
-                  key=lambda p: (_log_number(p), os.path.getmtime(p)))
+                  key=lambda p: (os.path.getmtime(p), _log_number(p)))
 
 
 def find_sd_cards():
@@ -218,7 +225,7 @@ def default_csv_path(path, log=None):
     return os.path.join(CSV_DIR, session_stem(path, log) + ".csv")
 
 
-def copy_logs(src_folder, dest_folder=LOG_DIR):
+def copy_logs(src_folder, dest_folder=RAW_DIR):
     """Copy every log from the card into dest_folder, renamed with the start
     time from its header so files from different sessions never clash. A file
     already copied (same name and size) is skipped. Nothing on the card is
@@ -270,7 +277,7 @@ def main():
     p.add_argument("source", nargs="?",
                    help="a .blf file, a folder, or a drive like E: (default: find the SD card)")
     p.add_argument("--all", action="store_true", help="summarise every log in the folder, not just the newest")
-    p.add_argument("--copy", action="store_true", help=f"copy the logs into {LOG_DIR}")
+    p.add_argument("--copy", action="store_true", help=f"copy the logs into {RAW_DIR}")
     p.add_argument("--csv", help="write the CSV here instead of Strain-Logs/CSV/ (single file only)")
     p.add_argument("--no-csv", action="store_true", help="don't save CSVs")
     args = p.parse_args()
@@ -293,7 +300,7 @@ def main():
             sys.exit(f"No {LOG_GLOB} files in {src}")
         if args.copy:
             new = copy_logs(src)
-            print(f"Copied {len(new)} new file(s) into {LOG_DIR}")
+            print(f"Copied {len(new)} new file(s) into {RAW_DIR}")
             for path in new:
                 print("    " + os.path.basename(path))
         if not args.all:

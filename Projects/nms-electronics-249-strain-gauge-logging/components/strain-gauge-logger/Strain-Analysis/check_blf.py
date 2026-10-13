@@ -8,9 +8,9 @@ Core/Src/main.c, Core/Src/blf.c and the HAL RTC driver). Its output is then
 compared with the file. The gauge values are copied from the file, so this
 checks every byte except whether the voltages themselves are realistic.
 
-    python check_blf.py Strain-Logs/strain_gauge_log_2026-10-06_23-09-25.blf
-    python check_blf.py Strain-Logs/*.blf
-    python check_blf.py --rebuild Strain-Logs/x.blf   # recompile fw_writer first
+    python check_blf.py Strain-Logs/raw-sd-data/strain_gauge_log_2026-10-06_23-09-25.blf
+    python check_blf.py Strain-Logs/raw-sd-data/*.blf
+    python check_blf.py --rebuild Strain-Logs/raw-sd-data/x.blf   # recompile fw_writer first
 
 The first run compiles fw_writer.exe with gcc, which must be on your PATH.
 Exit code is 0 if every file matches, 1 otherwise.

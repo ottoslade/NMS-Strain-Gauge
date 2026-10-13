@@ -5,7 +5,7 @@ the firmware writes to the SD card (see Core/Src/blf.c and shared/blf/blf.h).
 Use it to develop analysis code without hardware. Only the standard library
 is needed.
 
-    python fake_blf.py                          # 10 s -> Strain-Logs/strain_gauge_log_<date>_<time>.blf
+    python fake_blf.py                          # 10 s -> Strain-Logs/raw-sd-data/strain_gauge_log_<date>_<time>.blf
     python fake_blf.py -d 60 -o run.blf --csv run_truth.csv
 
 File layout (all little-endian, packed):
@@ -128,9 +128,9 @@ def can_message(can_id, timestamp, data):
 
 
 def default_out_path(when):
-    """Strain-Logs/strain_gauge_log_YYYY-MM-DD_HH-MM-SS.blf next to this script,
-    with _2, _3, ... added if that name is already taken."""
-    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Strain-Logs")
+    """Strain-Logs/raw-sd-data/strain_gauge_log_YYYY-MM-DD_HH-MM-SS.blf next to
+    this script, with _2, _3, ... added if that name is already taken."""
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Strain-Logs", "raw-sd-data")
     os.makedirs(log_dir, exist_ok=True)
     base =os.path.join(log_dir, f"strain_gauge_log_{when:%Y-%m-%d_%H-%M-%S}")
     path, n = base + ".blf", 2
@@ -144,7 +144,7 @@ def main():
     p.add_argument("-d", "--duration", type=float, default=DURATION, 
                    help=f"seconds of data (default {DURATION})")
     p.add_argument("-o", "--out",
-                   help="output .blf path (default Strain-Logs/strain_gauge_log_<date>_<time>.blf)")
+                   help="output .blf path (default Strain-Logs/raw-sd-data/strain_gauge_log_<date>_<time>.blf)")
     p.add_argument("--start",
                    help="RTC start time, ISO format, e.g. 2026-10-06T14:30:00 (default: now)")
     p.add_argument("--no-rtc", action="store_true",
