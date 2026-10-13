@@ -3,7 +3,8 @@ Check that .blf files are byte-for-byte what the logger firmware would write.
 
 For each file, the start time, first timestamp and sample count are read from
 the file itself and fed to fw_check/fw_writer.exe, a PC build of the
-firmware's BLF write path (structs from shared/blf/blf.h, code copied from
+firmware's BLF write path (structs from fw_check/blf.h, a copy of the
+firmware's shared/blf/blf.h; code copied from
 Core/Src/main.c, Core/Src/blf.c and the HAL RTC driver). Its output is then
 compared with the file. The gauge values are copied from the file, so this
 checks every byte except whether the voltages themselves are realistic.
@@ -27,17 +28,27 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 FW_DIR = os.path.join(HERE, "fw_check")
 EXE = os.path.join(FW_DIR, "fw_writer.exe" if os.name == "nt" else "fw_writer")
-BLF_INCLUDE = os.path.normpath(os.path.join(HERE, "..", "..", "..", "shared", "blf"))
+# fw_check/blf.h is a copy of shared/blf/blf.h from the nms-electronics repo,
+# so this works on its own. If the original is next door, warn when they differ.
+SHARED_BLF_H = os.path.normpath(os.path.join(HERE, "..", "..", "..", "shared", "blf", "blf.h"))
 NORTC = (2026, 3, 0, 1, 0, 0, 0, 0)  # header time when the RTC was never synced
 FIELDS = {range(40, 42): "year", range(42, 44): "month", range(44, 46): "weekday",
           range(46, 48): "day", range(48, 54): "time", range(54, 56): "milliseconds",
           range(16, 24): "fileSize", range(32, 36): "countObjects"}
 
 
+def warn_if_blf_h_stale():
+    local = os.path.join(FW_DIR, "blf.h")
+    if os.path.exists(SHARED_BLF_H) and open(SHARED_BLF_H, "rb").read() != open(local, "rb").read():
+        print(f"Warning: {SHARED_BLF_H} has changed since it was copied to fw_check/blf.h.\n"
+              f"         Copy it over again and run with --rebuild.")
+
+
 def build(force=False):
+    warn_if_blf_h_stale()
     if os.path.exists(EXE) and not force:
         return
-    cmd = ["gcc", "-std=c11", "-Wall", "-O0", f"-I{FW_DIR}", f"-I{BLF_INCLUDE}",
+    cmd = ["gcc", "-std=c11", "-Wall", "-O0", f"-I{FW_DIR}",
            os.path.join(FW_DIR, "fw_writer.c"), "-o", EXE]
     print("Building fw_writer:", " ".join(cmd))
     try:
