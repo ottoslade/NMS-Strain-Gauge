@@ -30,6 +30,11 @@ static BLF_Container container = {.baseHeader = {.signature = {'L', 'O', 'B', 'J
 static size_t container_fp = 0;
 static char log_file_path[32];
 
+// One logging session at a time: init_logging() refuses to start a new one
+// until the previous blf_log_task has closed its file and exited.
+static TaskHandle_t blf_task_handle = NULL;
+static volatile bool stop_requested = false;
+
 static FRESULT blf_update_header()
 {
   FRESULT result = f_rewind(&SDFile);
@@ -109,6 +114,11 @@ static FRESULT blf_write_new_container()
   return blf_update_container();
 }
 
+static bool blf_should_stop(void)
+{
+  return stop_requested || sd_card_position != SD_CARD_INSERTED;
+}
+
 /** https://elm-chan.org/fsw/ff/doc/appnote.html */
 static void blf_log_task(void *arg)
 {
@@ -117,18 +127,21 @@ static void blf_log_task(void *arg)
   static BLF_CanMessage msg_buffer[STREAM_BUFFER_TRIGGER] __attribute__((aligned(4)));
   static const size_t msg_size = sizeof(msg_buffer);
 
-  while (sd_card_position == SD_CARD_INSERTED)
+  while (!blf_should_stop())
   {
     size_t bytes_read = 0;
 
-    // write all 96 messages at once
-    while (bytes_read < msg_size)
+    // write all 96 messages at once. Wait in short slices rather than forever
+    // so a card removal is noticed even when no more data arrives.
+    while (bytes_read < msg_size && !blf_should_stop())
     {
       bytes_read += xStreamBufferReceive(sd_card_stream_queue,
                                          ((void *)&msg_buffer) + bytes_read,
                                          msg_size - bytes_read,
-                                         portMAX_DELAY);
+                                         pdMS_TO_TICKS(100));
     }
+    if (bytes_read < msg_size)
+      break; // stopping: drop the partial batch
 
     // create and write new a new container when we reach the uint32_t limit
     if (container.baseHeader.objectSize >= 559240 * msg_size)
@@ -163,15 +176,35 @@ static void blf_log_task(void *arg)
   }
 
   // TODO: close file if we get inverter disable
+  // Best effort: these fail harmlessly if the card is already gone.
   blf_update_header();
   blf_update_container();
   f_close(&SDFile);
+  f_mount(NULL, SDPath, 0); // unmount here, not in the card-detect ISR
+
+  // Discard anything left in the stream (possibly part of a message) so the
+  // next session starts on a message boundary. Reset only succeeds while no
+  // task is blocked on the buffer; measureGaugesTask never blocks on it.
+  while (xStreamBufferReset(sd_card_stream_queue) != pdPASS)
+    vTaskDelay(1);
+
+  blf_task_handle = NULL;
   vTaskDelete(NULL);
+}
+
+void stop_logging(void)
+{
+  stop_requested = true;
 }
 
 FRESULT init_logging(void)
 {
   FRESULT res;
+
+  // Previous session still closing its file: try again later
+  if (blf_task_handle != NULL)
+    return FR_LOCKED;
+  stop_requested = false;
 
   // Mount the SD card
   res = f_mount(&SDFatFS, SDPath, 1);
@@ -191,21 +224,24 @@ FRESULT init_logging(void)
     return res;
 
   res = blf_write_header(&SDFile);
+  if (res == FR_OK)
+    res = blf_write_new_container();
   if (res != FR_OK)
+  {
+    f_close(&SDFile);
     return res;
-
-  res = blf_write_new_container();
-  if (res != FR_OK)
-    return res;
+  }
 
   BaseType_t task = xTaskCreate(blf_log_task,
                                 "blf_log_task",
                                 1024 /* words */,
                                 NULL,
                                 PRIORITY_LOW,
-                                NULL);
+                                &blf_task_handle);
   if (task != pdPASS)
   {
+    blf_task_handle = NULL;
+    f_close(&SDFile);
     return FR_DENIED;
   }
 

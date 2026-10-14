@@ -92,3 +92,4 @@ typedef struct __attribute__((packed))
 } BLF_CanFDMessage;
 
 FRESULT init_logging(void);
+void stop_logging(void);

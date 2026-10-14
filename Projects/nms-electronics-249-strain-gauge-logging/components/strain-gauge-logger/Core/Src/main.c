@@ -182,16 +182,23 @@ void measureGaugesTask(void *argument)
         // if (stream_free < stream_min_free)
         // stream_min_free = stream_free;
 
-        xStreamBufferSend(sd_card_stream_queue, &msg1, sizeof(BLF_CanMessage), portMAX_DELAY);
-        xStreamBufferSend(sd_card_stream_queue, &msg2, sizeof(BLF_CanMessage), portMAX_DELAY);
-        xStreamBufferSend(sd_card_stream_queue, &msg3, sizeof(BLF_CanMessage), portMAX_DELAY);
+        // Never block the 1 ms loop on the SD card: if the buffer can't take
+        // the whole sample (card stalled or being pulled), drop the sample.
+        // All three messages or none, so the stream stays message-aligned.
+        if (xStreamBufferSpacesAvailable(sd_card_stream_queue) >= 3 * sizeof(BLF_CanMessage))
+        {
+          xStreamBufferSend(sd_card_stream_queue, &msg1, sizeof(BLF_CanMessage), 0);
+          xStreamBufferSend(sd_card_stream_queue, &msg2, sizeof(BLF_CanMessage), 0);
+          xStreamBufferSend(sd_card_stream_queue, &msg3, sizeof(BLF_CanMessage), 0);
+        }
       }
     }
     else
     {
       if (logging_active)
       {
-        xStreamBufferReset(sd_card_stream_queue);
+        // blf_log_task closes the file, unmounts and clears the stream itself
+        stop_logging();
         logging_active = false;
       }
 
@@ -383,7 +390,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     }
     else
     {
-      f_mount(NULL, "", 0);
+      // only record the state here: FatFs must not be called from an ISR.
+      // blf_log_task unmounts when it sees the removal.
       sd_card_position = SD_CARD_REMOVED;
     }
   }
