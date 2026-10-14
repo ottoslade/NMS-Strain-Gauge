@@ -49,8 +49,30 @@ def load_strain(path):
     return df, True
 
 
+def break_at_gaps(df, sample_s=0.001):
+    """Insert a NaN row inside every gap so the plotted line breaks there
+    instead of drawing a straight ramp across missing data. Uses the same
+    rule as read_blf.py: a step longer than 1.5 samples is a gap.
+    Returns (df, number of gaps, samples missing)."""
+    t = df.index.to_numpy()
+    steps = t[1:] - t[:-1]
+    at = steps > 1.5 * sample_s
+    if not at.any():
+        return df, 0, 0
+    missing = int(sum(round(s / sample_s) - 1 for s in steps[at]))
+    blanks = pd.DataFrame(float("nan"), index=t[:-1][at] + sample_s / 2, columns=df.columns)
+    return pd.concat([df, blanks]).sort_index(), int(at.sum()), missing
+
+
 def plot(df, title, out_path, show=False, placeholder=False):
     import matplotlib.pyplot as plt
+
+    df, n_gaps, n_missing = break_at_gaps(df)
+    notes = []
+    if placeholder:
+        notes.append("Placeholder hardware constants in strain.py: magnitudes are illustrative only")
+    if n_gaps:
+        notes.append(f"Line breaks mark {n_gaps} gap(s): {n_missing} missing samples")
 
     plt.rcParams.update({
         "font.size": 10, "axes.edgecolor": GRID, "axes.labelcolor": TEXT_2,
@@ -74,11 +96,10 @@ def plot(df, title, out_path, show=False, placeholder=False):
         ax.set_xlabel("Time (s)")
 
     fig = axes.flat[0].get_figure()
-    fig.tight_layout(rect=(0, 0, 1, 0.95 if placeholder else 0.965))
+    fig.tight_layout(rect=(0, 0, 1, 0.95 if notes else 0.965))
     fig.suptitle(title, x=0.01, y=0.99, ha="left", va="top", fontsize=13, color=TEXT)
-    if placeholder:
-        fig.text(0.01, 0.955, "Placeholder hardware constants in strain.py: magnitudes are illustrative only",
-                 fontsize=9, color=TEXT_2, va="top")
+    if notes:
+        fig.text(0.01, 0.955, "    ·    ".join(notes), fontsize=9, color=TEXT_2, va="top")
     fig.savefig(out_path, dpi=150)
     if show:
         plt.show()

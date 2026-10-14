@@ -237,6 +237,8 @@ python plot_strain.py Strain-Logs/Strain/x_strain.csv --show           # also op
 
 It also accepts volts CSVs or `.blf` logs and converts them with `strain.py` first. While `strain.py` still has placeholder constants, every plot carries a note saying the magnitudes are illustrative.
 
+**Gaps:** where samples are missing, the line breaks instead of drawing a straight ramp across the missing data. The subtitle shows how many gaps there are and how many samples are missing. This uses the same rule as `read_blf.py`'s gap report (a step of more than 1.5 ms), so the two always agree. `blf_plot.py` behaves the same way.
+
 ## Using the Data in Python
 
 ```python
