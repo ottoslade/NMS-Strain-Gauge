@@ -68,7 +68,7 @@ def step_check(path, log):
 
 def step_strain(path, log):
     ue, zeros, clipped = strain.volts_to_strain(log.t, log.gauges)
-    stem = os.path.splitext(os.path.basename(path))[0]
+    stem = read_blf.session_stem(path, log)
     os.makedirs(strain.STRAIN_DIR, exist_ok=True)
     out = os.path.join(strain.STRAIN_DIR, f"{stem}_strain.csv")
     strain.write_strain_csv(out, log.t, ue)
@@ -86,7 +86,7 @@ def step_strain(path, log):
 
 def step_plot(path):
     df, _ = plot_strain.load_strain(path)
-    stem = os.path.splitext(os.path.basename(path))[0]
+    stem = read_blf.session_stem(path)
     os.makedirs(plot_strain.PLOT_DIR, exist_ok=True)
     out = os.path.join(plot_strain.PLOT_DIR, f"{stem}.png")
     plot_strain.plot(df, f"Strain by gauge - {stem}", out,

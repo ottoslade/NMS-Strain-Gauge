@@ -22,6 +22,8 @@ import matplotlib
 
 import pandas as pd
 
+import read_blf
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLOT_DIR = os.path.join(HERE, "strain_logs", "4_strain_plots")
 
@@ -125,7 +127,7 @@ def main():
         if df.empty:
             print(f"skipped {path}: no samples in range")
             continue
-        stem = os.path.splitext(os.path.basename(path))[0].removesuffix("_strain")
+        stem = read_blf.session_stem(path).removesuffix("_strain")  # same base name as the other stages
         zoomed = args.start is not None or args.end is not None
         span = f"{df.index[0]:g}-{df.index[-1]:g}s" if zoomed else ""
         out = os.path.join(args.out_dir, f"{stem}_{span}.png" if span else f"{stem}.png")

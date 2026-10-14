@@ -28,6 +28,8 @@ import glob
 import os
 import sys
 
+import read_blf
+
 # =============================================================================
 # HARDWARE CONSTANTS - update these to match the real logger and gauges
 # =============================================================================
@@ -173,7 +175,7 @@ def main():
             print(f"skipped {os.path.basename(path)}: no samples")
             continue
         ue, zeros, clipped = volts_to_strain(t, volts)
-        stem = os.path.splitext(os.path.basename(path))[0]
+        stem = read_blf.session_stem(path)  # same base name as the voltage CSV
         out = os.path.join(args.out_dir, f"{stem}_strain.csv")
         write_strain_csv(out, t, ue)
         print(f"{os.path.basename(path)}: {len(t)} samples -> {out}")

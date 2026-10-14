@@ -233,7 +233,7 @@ def session_stem(path, log=None):
     header start time added: sd_<date>_<time>_strain_gauge_log_000. Other
     names (fake logs, files already copied) are kept as they are."""
     stem = os.path.splitext(os.path.basename(path))[0]
-    if _log_number(path) < 0:
+    if not path.lower().endswith(".blf") or _log_number(path) < 0:
         return stem
     try:
         log = log or read_log(path)

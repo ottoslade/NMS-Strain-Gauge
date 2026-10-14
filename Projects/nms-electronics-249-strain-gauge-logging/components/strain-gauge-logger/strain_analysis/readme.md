@@ -112,12 +112,12 @@ python read_blf.py strain_logs/1_raw_blf
 Reads logs, prints a summary of each, and saves each as a CSV in `strain_logs/2_voltage_csv/`.
 
 ```bash
-python read_blf.py                                  # find the SD card, read the newest log
-python read_blf.py E:                               # a specific drive
-python read_blf.py E: --all                         # every log on the card
-python read_blf.py E: --copy                        # also copy the card's logs into 1_raw_blf/
-python read_blf.py strain_logs/1_raw_blf --all    # every log already on disk
-python read_blf.py path/to/log.blf --csv out.csv    # save the CSV somewhere else
+python read_blf.py                                        # find the SD card, read the newest log
+python read_blf.py E:                                     # a specific drive
+python read_blf.py E: --all                               # every log on the card
+python read_blf.py E: --copy                              # also copy the card's logs into 1_raw_blf/
+python read_blf.py strain_logs/1_raw_blf --all            # every log already on disk
+python read_blf.py path/to/log.blf --csv out.csv          # save the CSV somewhere else
 python read_blf.py strain_logs/1_raw_blf --all --no-csv   # summaries only
 ```
 
@@ -159,7 +159,7 @@ Generates dummy logs with exactly the layout the firmware writes, so analysis co
 
 ```bash
 python fake_blf.py                                  # 10 s log, named with the current date and time
-python fake_blf.py -d 60 --csv strain_logs/2_voltage_csv/truth.csv
+python fake_blf.py -d 60 --csv truth.csv               # also save the noise-free signal
 python fake_blf.py --start 2026-10-06T14:30:00 --seed 3
 ```
 
@@ -244,9 +244,9 @@ ue[2][100]   # gauge 3 at t[100], in microstrain
 Plots strain over time for each gauge and saves a PNG to `strain_logs/4_strain_plots/`. There is one panel per gauge, laid out in pairs (1-2, 3-4, 5-6), and all panels share the same time and strain axes, so heights compare directly.
 
 ```bash
-python plot_strain.py strain_logs/3_strain_csv/*_strain.csv                  # every strain CSV
+python plot_strain.py strain_logs/3_strain_csv/*_strain.csv                        # every strain CSV
 python plot_strain.py strain_logs/3_strain_csv/x_strain.csv --start 0.9 --end 1.5   # zoom in on a time window
-python plot_strain.py strain_logs/3_strain_csv/x_strain.csv --show           # also open an interactive window
+python plot_strain.py strain_logs/3_strain_csv/x_strain.csv --show                  # also open an interactive window
 ```
 
 | Option | Effect |
@@ -299,21 +299,18 @@ t, v = data[:, 0], data[:, 1:]
 
 ## File Formats
 
-### CSV (`strain_logs/2_voltage_csv/`)
+One folder per pipeline stage. Each log keeps the same base name through every stage, so `<name>.blf` becomes `<name>.csv`, then `<name>_strain.csv`, then `<name>.png`.
 
-```
-t_s,gauge1_v,gauge2_v,gauge3_v,gauge4_v,gauge5_v,gauge6_v
-0.00000,1.573040,1.604469,1.845421,1.452967,1.921978,1.498901
-0.00100,1.581099,1.598828,1.849451,1.446520,1.925201,1.494066
-```
+| Folder | File | Made by | Contents |
+|---|---|---|---|
+| `strain_logs/1_raw_blf/` | `<name>.blf` | SD card / `fake_blf.py` | Raw log: three CAN messages per 1 ms sample |
+| `strain_logs/2_voltage_csv/` | `<name>.csv` | `read_blf.py` | Volts per gauge, one row per ms |
+| `strain_logs/3_strain_csv/` | `<name>_strain.csv` | `strain.py` | Microstrain per gauge, one row per ms |
+| `strain_logs/4_strain_plots/` | `<name>.png`, `<name>_<start>-<end>s.png` | `plot_strain.py`, `pipeline.py` | Strain over time, one panel per gauge |
 
-- One row per sample (1,000 per second).
-- `t_s` is seconds from the start of the log. Voltages are in volts, from 0 to 3.3.
-- The CSV has no wall-clock time; use `log.start` or the file name.
+Logs read straight off the SD card get the start time added to their name (`sd_<date>_<time>_strain_gauge_log_000`) so sessions never overwrite each other. See [read_blf.py](#read_blfpy).
 
-The values are **gauge output voltages, not strain**. Converting to strain (bridge configuration, gain, gauge factor, zero offset) is part of the analysis.
-
-### BLF (`strain_logs/1_raw_blf/`)
+### 1. Raw BLF (`strain_logs/1_raw_blf/`)
 
 These are Vector BLF files, also readable by CANalyzer, CANoe and python-can. All fields are little-endian and packed.
 
@@ -332,6 +329,36 @@ Each 1 ms sample is three CAN messages, each carrying two `float32` voltages:
 | `0x322` | Gauge 5 | Gauge 6 |
 
 Message timestamps are in 10 µs units and go up by 100 (1 ms) per sample. The structs are defined in `fw_check/blf.h`.
+
+### 2. Voltage CSV (`strain_logs/2_voltage_csv/`)
+
+```
+t_s,gauge1_v,gauge2_v,gauge3_v,gauge4_v,gauge5_v,gauge6_v
+0.00000,1.573040,1.604469,1.845421,1.452967,1.921978,1.498901
+0.00100,1.581099,1.598828,1.849451,1.446520,1.925201,1.494066
+```
+
+- One row per sample (1,000 per second). Missing samples have no row; see the gap report from `read_blf.py`.
+- `t_s` is seconds from the start of the log. Voltages are in volts, from 0 to 3.3, given to 6 decimal places.
+- There's no wall-clock time; use `log.start` or the file name.
+
+The values are **gauge output voltages, not strain**.
+
+### 3. Strain CSV (`strain_logs/3_strain_csv/`)
+
+```
+t_s,gauge1_ue,gauge2_ue,gauge3_ue,gauge4_ue,gauge5_ue,gauge6_ue
+0.00000,-738.83,728.81,1406.33,-1408.37,1377.86,-1364.92
+0.00100,-690.05,694.57,1430.82,-1447.33,1397.44,-1394.15
+```
+
+- Same rows and times as the voltage CSV.
+- Values are microstrain (µε, 1e-6 m/m) to 2 decimal places, with tension positive.
+- They're only as accurate as the hardware constants in `strain.py` (see [strain.py](#strainpy)).
+
+### 4. Strain plots (`strain_logs/4_strain_plots/`)
+
+PNG, 1800 × 1200 px. There are six panels, one per gauge, in pairs (1-2, 3-4, 5-6), on shared axes. Lines break where samples are missing. The subtitle notes the placeholder constants and any gaps. Zoomed plots made with `--start` / `--end` have the time window in their name.
 
 ## Firmware Quirks
 
