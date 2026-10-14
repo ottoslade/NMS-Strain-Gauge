@@ -1,24 +1,33 @@
 """
 Run the whole analysis pipeline on one .blf log and report each step.
 
-    python pipeline.py path/to/strain_gauge_log_000.blf
+    python pipeline.py path/to/strain_gauge_log_000.blf                  # voltage + strain
+    python pipeline.py path/to/strain_gauge_log_000.blf --plot voltage   # voltage only
+    python pipeline.py path/to/strain_gauge_log_000.blf --plot strain    # strain only
 
 Steps (same as running the scripts one after another):
-  1. read_blf   decode, check for gaps, save strain_logs/2_voltage_csv/<name>.csv (volts)
-  2. check_blf  byte-compare the file with the firmware's write code
-  3. strain     convert to microstrain, save strain_logs/3_strain_csv/<name>_strain.csv
-  4. plot       save strain_logs/4_strain_plots/<name>.png and open it
+  read_blf       decode, check for gaps, save strain_logs/2_voltage_csv/<name>.csv
+  check_blf      byte-compare the file with the firmware's write code
+  voltage plot   save strain_logs/3_voltage_plots/<name>.png          (unless --plot strain)
+  strain         convert to microstrain, save strain_logs/4_strain_csv/<name>_strain.csv
+  strain plot    save strain_logs/5_strain_plots/<name>.png           (both unless --plot voltage)
+
+--plot voltage skips the strain steps entirely, so it doesn't depend on the
+hardware constants in strain.py. The plots made are opened at the end.
 
 Ends with a PASS / WARN / FAIL line per step. Exit code is 1 if any step
 FAILs, 0 otherwise. Works from any folder.
 """
 
+import argparse
 import os
 import sys
 
 import matplotlib
 
 matplotlib.use("Agg")
+
+import pandas as pd
 
 import check_blf
 import plot_strain
@@ -66,9 +75,17 @@ def step_check(path, log):
     return FAIL, msg
 
 
-def step_strain(path, log):
+def step_voltage_plot(log, stem):
+    df = pd.DataFrame({f"gauge{g}_v": col for g, col in enumerate(log.gauges, 1)},
+                      index=pd.Index(log.t, name="t_s"))
+    os.makedirs(plot_strain.VOLT_PLOT_DIR, exist_ok=True)
+    out = os.path.join(plot_strain.VOLT_PLOT_DIR, f"{stem}.png")
+    plot_strain.plot_voltage(df, f"Voltage by gauge - {stem}", out)
+    return PASS, short(out), out
+
+
+def step_strain(log, stem):
     ue, zeros, clipped = strain.volts_to_strain(log.t, log.gauges)
-    stem = read_blf.session_stem(path, log)
     os.makedirs(strain.STRAIN_DIR, exist_ok=True)
     out = os.path.join(strain.STRAIN_DIR, f"{stem}_strain.csv")
     strain.write_strain_csv(out, log.t, ue)
@@ -81,55 +98,76 @@ def step_strain(path, log):
     if not strain.CONSTANTS_VERIFIED:
         notes.append("placeholder hardware constants")
     detail = short(out)
-    return (WARN, "; ".join(notes) + f" ({detail})") if notes else (PASS, detail)
+    status = WARN if notes else PASS
+    return status, ("; ".join(notes) + f" ({detail})") if notes else detail, ue
 
 
-def step_plot(path):
-    df, _ = plot_strain.load_strain(path)
-    stem = read_blf.session_stem(path)
+def step_strain_plot(log, ue, stem):
+    df = pd.DataFrame({f"{g['name']}_ue": col for g, col in zip(strain.GAUGES, ue)},
+                      index=pd.Index(log.t, name="t_s"))
     os.makedirs(plot_strain.PLOT_DIR, exist_ok=True)
     out = os.path.join(plot_strain.PLOT_DIR, f"{stem}.png")
-    plot_strain.plot(df, f"Strain by gauge - {stem}", out,
-                     placeholder=not strain.CONSTANTS_VERIFIED)
+    plot_strain.plot(df, f"Strain by gauge - {stem}", out, placeholder=not strain.CONSTANTS_VERIFIED)
     return PASS, short(out), out
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] in ("-h", "--help"):
-        sys.exit(f"usage: python {os.path.basename(__file__)} <log.blf>")
-    path = sys.argv[1]
+    p = argparse.ArgumentParser(description="Run the whole pipeline on one .blf log.")
+    p.add_argument("log", help="the .blf log to process")
+    p.add_argument("--plot", choices=("both", "voltage", "strain"), default="both",
+                   help="which plots to make (default both); 'voltage' skips the strain steps")
+    args = p.parse_args()
+    path = args.log
     if not os.path.isfile(path):
         sys.exit(f"File not found: {path}")
 
-    results = []
-    print("== 1/4 read_blf")
+    do_volts = args.plot in ("both", "voltage")
+    do_strain = args.plot in ("both", "strain")
+    steps = ["read_blf", "check_blf"] + (["voltage plot"] if do_volts else []) \
+        + (["strain", "strain plot"] if do_strain else [])
+
+    def header(name):
+        print(f"\n== {steps.index(name) + 1}/{len(steps)} {name}")
+
+    results, pngs = [], []
+    print(f"== 1/{len(steps)} read_blf")
     status, msg, log = step_read(path)
     results.append(("read_blf", status, msg))
 
-    png = None
     if status != FAIL:
-        print("\n== 2/4 check_blf")
+        stem = read_blf.session_stem(path, log)  # one base name for every output
+        header("check_blf")
         results.append(("check_blf", *step_check(path, log)))
         print(f"    {results[-1][2]}")
-        print("\n== 3/4 strain")
-        results.append(("strain", *step_strain(path, log)))
-        print("\n== 4/4 plot")
-        status, msg, png = step_plot(path)
-        results.append(("plot", status, msg))
-        print(f"    {msg}")
+        if do_volts:
+            header("voltage plot")
+            status, msg, png = step_voltage_plot(log, stem)
+            results.append(("voltage plot", status, msg))
+            pngs.append(png)
+            print(f"    {msg}")
+        if do_strain:
+            header("strain")
+            status, msg, ue = step_strain(log, stem)
+            results.append(("strain", status, msg))
+            header("strain plot")
+            status, msg, png = step_strain_plot(log, ue, stem)
+            results.append(("strain plot", status, msg))
+            pngs.append(png)
+            print(f"    {msg}")
 
     print("\n== Summary: " + os.path.basename(path))
     for name, status, msg in results:
-        print(f"  {status:4}  {name:9}  {msg}")
+        print(f"  {status:4}  {name:12}  {msg}")
     failed = any(s == FAIL for _, s, _ in results)
     print("  RESULT:", "FAIL" if failed else
           "OK with warnings" if any(s == WARN for _, s, _ in results) else "ALL PASS")
 
-    if png and hasattr(os, "startfile"):
-        try:
-            os.startfile(png)
-        except OSError:
-            pass
+    if hasattr(os, "startfile"):
+        for png in pngs:
+            try:
+                os.startfile(png)
+            except OSError:
+                pass
     sys.exit(1 if failed else 0)
 
 

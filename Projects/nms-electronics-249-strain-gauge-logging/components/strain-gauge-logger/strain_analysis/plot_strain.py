@@ -1,15 +1,20 @@
 """
-Plot strain over time for each gauge, one panel per gauge.
+Plot strain (or raw voltage) over time for each gauge, one panel per gauge.
 
-    python plot_strain.py strain_logs/3_strain_csv/strain_gauge_log_2026-10-06_23-09-25_strain.csv
-    python plot_strain.py strain_logs/3_strain_csv/*_strain.csv
-    python plot_strain.py strain_logs/3_strain_csv/x_strain.csv --show       # also open a window
-    python plot_strain.py strain_logs/3_strain_csv/x_strain.csv --start 2 --end 4   # zoom to 2-4 s
+    python plot_strain.py strain_logs/4_strain_csv/strain_gauge_log_2026-10-06_23-09-25_strain.csv
+    python plot_strain.py strain_logs/4_strain_csv/*_strain.csv
+    python plot_strain.py strain_logs/4_strain_csv/x_strain.csv --show       # also open a window
+    python plot_strain.py strain_logs/4_strain_csv/x_strain.csv --start 2 --end 4   # zoom to 2-4 s
+    python plot_strain.py strain_logs/2_voltage_csv/x.csv --volts            # plot volts, no conversion
 
-Input is a strain CSV from strain.py. A volts CSV from read_blf.py or a .blf
-log also works; it is converted with strain.py's constants first.
+Strain input is a strain CSV from strain.py; a volts CSV or a .blf log also
+works and is converted with strain.py's constants first. Saves
+strain_logs/5_strain_plots/<name>.png.
 
-Saves strain_logs/4_strain_plots/<name>.png. Needs pandas and matplotlib:
+With --volts, input is a volts CSV from read_blf.py or a .blf log, plotted
+as-is (no hardware constants involved). Saves strain_logs/3_voltage_plots/<name>.png.
+
+Needs pandas and matplotlib:
 
     pip install pandas matplotlib
 """
@@ -25,7 +30,8 @@ import pandas as pd
 import read_blf
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PLOT_DIR = os.path.join(HERE, "strain_logs", "4_strain_plots")
+PLOT_DIR = os.path.join(HERE, "strain_logs", "5_strain_plots")
+VOLT_PLOT_DIR = os.path.join(HERE, "strain_logs", "3_voltage_plots")
 
 # Colours: one series per panel, so every panel uses the same line colour and
 # the panel title names the gauge. Text stays in neutral ink.
@@ -51,6 +57,20 @@ def load_strain(path):
     return df, True
 
 
+def load_volts(path):
+    """DataFrame indexed by t_s with one voltage column per gauge, from a
+    read_blf.py volts CSV or straight from a .blf."""
+    if path.lower().endswith(".csv"):
+        df = pd.read_csv(path)
+        if not any(c.endswith("_v") for c in df.columns):
+            raise ValueError(f"{path}: not a volts CSV (expected gauge1_v ... gauge6_v columns)")
+        return df.set_index("t_s")
+    log = read_blf.read_log(path)
+    df = pd.DataFrame({f"gauge{g}_v": col for g, col in enumerate(log.gauges, 1)}, index=log.t)
+    df.index.name = "t_s"
+    return df
+
+
 def break_at_gaps(df, sample_s=0.001):
     """Insert a NaN row inside every gap so the plotted line breaks there
     instead of drawing a straight ramp across missing data. Uses the same
@@ -67,33 +87,43 @@ def break_at_gaps(df, sample_s=0.001):
 
 
 def plot(df, title, out_path, show=False, placeholder=False):
+    """Strain plot: microstrain columns (gaugeN_ue), with a zero line."""
+    notes = ["Placeholder hardware constants in strain.py: magnitudes are illustrative only"] if placeholder else []
+    _plot_panels(df, "_ue", "Strain (µε)", True, title, out_path, show, notes)
+
+
+def plot_voltage(df, title, out_path, show=False):
+    """Voltage plot: raw gauge volts (gaugeN_v) as logged, no conversion."""
+    _plot_panels(df, "_v", "Voltage (V)", False, title, out_path, show, [])
+
+
+def _plot_panels(df, suffix, ylabel, zero_line, title, out_path, show, notes):
+    """Six panels, one per gauge, shared axes, line broken at gaps."""
     import matplotlib.pyplot as plt
 
     df, n_gaps, n_missing = break_at_gaps(df)
-    notes = []
-    if placeholder:
-        notes.append("Placeholder hardware constants in strain.py: magnitudes are illustrative only")
     if n_gaps:
-        notes.append(f"Line breaks mark {n_gaps} gap(s): {n_missing} missing samples")
+        notes = notes + [f"Line breaks mark {n_gaps} gap(s): {n_missing} missing samples"]
 
     plt.rcParams.update({
         "font.size": 10, "axes.edgecolor": GRID, "axes.labelcolor": TEXT_2,
         "xtick.color": TEXT_2, "ytick.color": TEXT_2, "text.color": TEXT,
         "axes.facecolor": SURFACE, "figure.facecolor": SURFACE,
     })
-    df = df.rename(columns=lambda c: c.removesuffix("_ue").replace("gauge", "Gauge "))
+    df = df.rename(columns=lambda c: c.removesuffix(suffix).replace("gauge", "Gauge "))
     axes = df.plot(subplots=True, layout=(3, 2), sharex=True, sharey=True, legend=False,
                    color=LINE, linewidth=1.0, figsize=(12, 8))
     for ax, name in zip(axes.flat, df.columns):
         ax.set_title(name, loc="left", fontsize=11, color=TEXT)
-        ax.axhline(0, color=ZERO, linewidth=0.8, zorder=0)
+        if zero_line:
+            ax.axhline(0, color=ZERO, linewidth=0.8, zorder=0)
         ax.grid(True, color=GRID, linewidth=0.6)
         ax.set_axisbelow(True)
         for side in ("top", "right"):
             ax.spines[side].set_visible(False)
         ax.tick_params(length=0)
     for ax in axes[:, 0]:
-        ax.set_ylabel("Strain (µε)")
+        ax.set_ylabel(ylabel)
     for ax in axes[-1, :]:
         ax.set_xlabel("Time (s)")
 
@@ -109,9 +139,12 @@ def plot(df, title, out_path, show=False, placeholder=False):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Plot strain over time for each gauge.")
+    p = argparse.ArgumentParser(description="Plot strain (or raw voltage) over time for each gauge.")
     p.add_argument("files", nargs="+", help="strain CSVs from strain.py (or volts CSVs / .blf logs)")
-    p.add_argument("-o", "--out-dir", default=PLOT_DIR, help="output folder (default strain_logs/4_strain_plots/)")
+    p.add_argument("--volts", action="store_true",
+                   help="plot the logged voltages instead of strain (volts CSVs or .blf logs)")
+    p.add_argument("-o", "--out-dir",
+                   help="output folder (default strain_logs/5_strain_plots/, or 3_voltage_plots/ with --volts)")
     p.add_argument("--start", type=float, help="start time in seconds")
     p.add_argument("--end", type=float, help="end time in seconds")
     p.add_argument("--show", action="store_true", help="also open the plot in a window")
@@ -120,9 +153,14 @@ def main():
         matplotlib.use("Agg")  # save files without needing a display
 
     import strain
-    os.makedirs(args.out_dir, exist_ok=True)
+    out_dir = args.out_dir or (VOLT_PLOT_DIR if args.volts else PLOT_DIR)
+    os.makedirs(out_dir, exist_ok=True)
     for path in [f for pat in args.files for f in (glob.glob(pat) or [pat])]:
-        df, _ = load_strain(path)
+        try:
+            df = load_volts(path) if args.volts else load_strain(path)[0]
+        except (OSError, ValueError) as e:
+            print(f"skipped {path}: {e}")
+            continue
         df = df.loc[args.start:args.end]
         if df.empty:
             print(f"skipped {path}: no samples in range")
@@ -130,9 +168,13 @@ def main():
         stem = read_blf.session_stem(path).removesuffix("_strain")  # same base name as the other stages
         zoomed = args.start is not None or args.end is not None
         span = f"{df.index[0]:g}-{df.index[-1]:g}s" if zoomed else ""
-        out = os.path.join(args.out_dir, f"{stem}_{span}.png" if span else f"{stem}.png")
-        title = f"Strain by gauge - {stem}" + (f" ({span})" if span else "")
-        plot(df, title, out, args.show, placeholder=not strain.CONSTANTS_VERIFIED)
+        out = os.path.join(out_dir, f"{stem}_{span}.png" if span else f"{stem}.png")
+        what = "Voltage" if args.volts else "Strain"
+        title = f"{what} by gauge - {stem}" + (f" ({span})" if span else "")
+        if args.volts:
+            plot_voltage(df, title, out, args.show)
+        else:
+            plot(df, title, out, args.show, placeholder=not strain.CONSTANTS_VERIFIED)
         print(f"{os.path.basename(path)} -> {out}")
 
 

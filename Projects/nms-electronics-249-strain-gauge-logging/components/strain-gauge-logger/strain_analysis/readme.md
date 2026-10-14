@@ -3,18 +3,21 @@
 Tools for analysing the voltage data recorded by the Nittany Motorsports **Strain Gauge Logger** (SGL). The logger samples six strain gauges every 1 ms and saves them to its SD card as `.blf` files. The scripts here read those files, turn them into CSVs and plain Python arrays, and generate realistic fake logs so the analysis can be developed without hardware.
 
 ```
-strain_logs/1_raw_blf/      SD card logs (or fake_blf.py dummies)
+strain_logs/1_raw_blf/         SD card logs (or fake_blf.py dummies)
         │  read_blf.py
         ▼
-strain_logs/2_voltage_csv/  volts per gauge, per ms
+strain_logs/2_voltage_csv/     volts per gauge, per ms
+        │  plot_strain.py --volts
+        ├──────────────────►  strain_logs/3_voltage_plots/  volts over time, one panel per gauge
         │  strain.py
         ▼
-strain_logs/3_strain_csv/   microstrain per gauge, per ms
+strain_logs/4_strain_csv/      microstrain per gauge, per ms
         │  plot_strain.py
         ▼
-strain_logs/4_strain_plots/ strain over time, one panel per gauge
+strain_logs/5_strain_plots/    strain over time, one panel per gauge
 
 pipeline.py   runs every step above on one log, with a PASS / WARN / FAIL summary
+              (--plot voltage stops at the voltage plot; --plot strain skips it)
 check_blf.py  proves a .blf matches the firmware's format byte for byte
 ```
 
@@ -50,7 +53,7 @@ strain_analysis/
 ├── fake_blf.py          Generate dummy .blf logs in the exact firmware format
 ├── check_blf.py         Byte-compare .blf files against the firmware's write code
 ├── strain.py            Convert gauge voltages to microstrain, ms by ms (hardware constants at the top)
-├── plot_strain.py       Plot strain over time, one panel per gauge (pandas + matplotlib)
+├── plot_strain.py       Plot strain (or, with --volts, voltage) over time, one panel per gauge
 ├── pipeline.py          Whole pipeline on one .blf, with a PASS / WARN / FAIL summary
 ├── fw_check/            PC build of the firmware's BLF writer, used by check_blf.py
 │   ├── fw_writer.c      Write path copied from Core/Src/main.c, Core/Src/blf.c and the HAL RTC driver
@@ -61,8 +64,9 @@ strain_analysis/
 └── strain_logs/         Data, one folder per pipeline stage (numbered so they list in order)
     ├── 1_raw_blf/       .blf logs copied off the SD card, or made by fake_blf.py
     ├── 2_voltage_csv/   Volts per gauge per ms, decoded by read_blf.py
-    ├── 3_strain_csv/    Microstrain per gauge per ms, from strain.py
-    └── 4_strain_plots/  PNGs from plot_strain.py / pipeline.py
+    ├── 3_voltage_plots/ Voltage plots from pipeline.py / plot_strain.py --volts
+    ├── 4_strain_csv/    Microstrain per gauge per ms, from strain.py
+    └── 5_strain_plots/  Strain plots from pipeline.py / plot_strain.py
 ```
 
 The contents of `strain_logs/` are not committed to git (see `.gitignore`); only the empty folders are. To commit a specific log anyway, use `git add -f strain_logs/1_raw_blf/<file>`.
@@ -79,20 +83,25 @@ python read_blf.py --copy --all
 
 This finds the card, copies its logs into `strain_logs/1_raw_blf/`, prints a summary of each, and saves a CSV for each into `strain_logs/2_voltage_csv/`. Nothing on the card is changed.
 
-**Test the whole pipeline on a log:** one argument, from any folder. This runs `read_blf` (with the gap check), `check_blf`, `strain` and the plot in order. It saves every output, opens the plot, and ends with a PASS / WARN / FAIL line for each step. The exit code is 1 if any step fails.
+**Test the whole pipeline on a log:** one argument, from any folder. This runs `read_blf` (with the gap check), `check_blf`, the voltage plot, `strain` and the strain plot, in that order. It saves every output, opens the plots, and ends with a PASS / WARN / FAIL line for each step. The exit code is 1 if any step fails.
 
 ```bash
-python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf
+python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf                  # voltage and strain
+python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf --plot voltage   # voltage only
+python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf --plot strain    # strain only
 ```
 
 ```
 == Summary: strain_gauge_log_2026-10-06_23-09-25.blf
-  PASS  read_blf   9984 samples, 9.984 s -> strain_logs\2_voltage_csv\strain_gauge_log_2026-10-06_23-09-25.csv
-  PASS  check_blf  1,437,872 bytes identical
-  WARN  strain     placeholder hardware constants (strain_logs\3_strain_csv\strain_gauge_log_2026-10-06_23-09-25_strain.csv)
-  PASS  plot       strain_logs\4_strain_plots\strain_gauge_log_2026-10-06_23-09-25.png
+  PASS  read_blf      9984 samples, 9.984 s -> strain_logs\2_voltage_csv\strain_gauge_log_2026-10-06_23-09-25.csv
+  PASS  check_blf     1,437,872 bytes identical
+  PASS  voltage plot  strain_logs\3_voltage_plots\strain_gauge_log_2026-10-06_23-09-25.png
+  WARN  strain        placeholder hardware constants (strain_logs\4_strain_csv\strain_gauge_log_2026-10-06_23-09-25_strain.csv)
+  PASS  strain plot   strain_logs\5_strain_plots\strain_gauge_log_2026-10-06_23-09-25.png
   RESULT: OK with warnings
 ```
+
+`--plot voltage` skips the strain steps entirely, so it doesn't depend on the placeholder constants in `strain.py`. Use it to check raw logs before the hardware values are known; a healthy log then gives `ALL PASS`.
 
 Gaps, a cut-off file or clipped readings give WARN. An empty log, or a file that differs from the firmware for any other reason, gives FAIL. `check_blf` shows SKIP if gcc isn't installed.
 
@@ -198,7 +207,7 @@ Use `check_blf.py` to confirm that the dummy logs are still realistic after chan
 
 ### strain.py
 
-Converts the logged voltages to strain at each gauge, one row per millisecond. It takes the CSVs from `read_blf.py`, or `.blf` logs directly, and writes `strain_logs/3_strain_csv/<name>_strain.csv`.
+Converts the logged voltages to strain at each gauge, one row per millisecond. It takes the CSVs from `read_blf.py`, or `.blf` logs directly, and writes `strain_logs/4_strain_csv/<name>_strain.csv`.
 
 ```bash
 python strain.py strain_logs/2_voltage_csv/*.csv
@@ -241,21 +250,23 @@ ue[2][100]   # gauge 3 at t[100], in microstrain
 
 ### plot_strain.py
 
-Plots strain over time for each gauge and saves a PNG to `strain_logs/4_strain_plots/`. There is one panel per gauge, laid out in pairs (1-2, 3-4, 5-6), and all panels share the same time and strain axes, so heights compare directly.
+Plots strain over time for each gauge and saves a PNG to `strain_logs/5_strain_plots/`. With `--volts` it plots the logged voltages instead and saves to `strain_logs/3_voltage_plots/`. There is one panel per gauge, laid out in pairs (1-2, 3-4, 5-6), and all panels share the same axes, so heights compare directly.
 
 ```bash
-python plot_strain.py strain_logs/3_strain_csv/*_strain.csv                        # every strain CSV
-python plot_strain.py strain_logs/3_strain_csv/x_strain.csv --start 0.9 --end 1.5   # zoom in on a time window
-python plot_strain.py strain_logs/3_strain_csv/x_strain.csv --show                  # also open an interactive window
+python plot_strain.py strain_logs/4_strain_csv/*_strain.csv                        # every strain CSV
+python plot_strain.py strain_logs/4_strain_csv/x_strain.csv --start 0.9 --end 1.5   # zoom in on a time window
+python plot_strain.py strain_logs/4_strain_csv/x_strain.csv --show                  # also open an interactive window
+python plot_strain.py strain_logs/2_voltage_csv/*.csv --volts                       # voltage plots
 ```
 
 | Option | Effect |
 |---|---|
+| `--volts` | Plot the logged voltages (volts CSVs or `.blf` logs) as they are, with no hardware constants. Saved to `strain_logs/3_voltage_plots/`. |
 | `--start`, `--end` | Plot only this time window, in seconds. Zoomed plots are saved as `<name>_<start>-<end>s.png`. |
 | `--show` | Also open the plot in a window, where you can pan and zoom. |
-| `-o DIR` | Save somewhere other than `strain_logs/4_strain_plots/`. |
+| `-o DIR` | Save somewhere else. |
 
-It also accepts volts CSVs or `.blf` logs and converts them with `strain.py` first. While `strain.py` still has placeholder constants, every plot carries a note saying the magnitudes are illustrative.
+For strain plots it also accepts volts CSVs or `.blf` logs, converting them with `strain.py` first. While `strain.py` still has placeholder constants, every strain plot carries a note saying the magnitudes are illustrative. Voltage plots have no such note and no zero line, since 0 V isn't a meaningful baseline.
 
 **Gaps:** where samples are missing, the line breaks instead of drawing a straight ramp across the missing data. The subtitle shows how many gaps there are and how many samples are missing. This uses the same rule as `read_blf.py`'s gap report (a step of more than 1.5 ms), so the two always agree. `pipeline.py` behaves the same way.
 
@@ -299,14 +310,15 @@ t, v = data[:, 0], data[:, 1:]
 
 ## File Formats
 
-One folder per pipeline stage. Each log keeps the same base name through every stage, so `<name>.blf` becomes `<name>.csv`, then `<name>_strain.csv`, then `<name>.png`.
+One folder per pipeline stage. Each log keeps the same base name through every stage, so `<name>.blf` becomes `<name>.csv`, `<name>.png` (voltage), `<name>_strain.csv` and `<name>.png` (strain).
 
 | Folder | File | Made by | Contents |
 |---|---|---|---|
 | `strain_logs/1_raw_blf/` | `<name>.blf` | SD card / `fake_blf.py` | Raw log: three CAN messages per 1 ms sample |
 | `strain_logs/2_voltage_csv/` | `<name>.csv` | `read_blf.py` | Volts per gauge, one row per ms |
-| `strain_logs/3_strain_csv/` | `<name>_strain.csv` | `strain.py` | Microstrain per gauge, one row per ms |
-| `strain_logs/4_strain_plots/` | `<name>.png`, `<name>_<start>-<end>s.png` | `plot_strain.py`, `pipeline.py` | Strain over time, one panel per gauge |
+| `strain_logs/3_voltage_plots/` | `<name>.png`, `<name>_<start>-<end>s.png` | `pipeline.py`, `plot_strain.py --volts` | Volts over time, one panel per gauge |
+| `strain_logs/4_strain_csv/` | `<name>_strain.csv` | `strain.py` | Microstrain per gauge, one row per ms |
+| `strain_logs/5_strain_plots/` | `<name>.png`, `<name>_<start>-<end>s.png` | `pipeline.py`, `plot_strain.py` | Strain over time, one panel per gauge |
 
 Logs read straight off the SD card get the start time added to their name (`sd_<date>_<time>_strain_gauge_log_000`) so sessions never overwrite each other. See [read_blf.py](#read_blfpy).
 
@@ -344,7 +356,11 @@ t_s,gauge1_v,gauge2_v,gauge3_v,gauge4_v,gauge5_v,gauge6_v
 
 The values are **gauge output voltages, not strain**.
 
-### 3. Strain CSV (`strain_logs/3_strain_csv/`)
+### 3. Voltage plots (`strain_logs/3_voltage_plots/`)
+
+PNG, 1800 × 1200 px, same layout as the strain plots: six panels on shared axes, with lines broken where samples are missing. The y-axis is in volts, exactly as logged, so these don't depend on the hardware constants in `strain.py`. There's no zero line.
+
+### 4. Strain CSV (`strain_logs/4_strain_csv/`)
 
 ```
 t_s,gauge1_ue,gauge2_ue,gauge3_ue,gauge4_ue,gauge5_ue,gauge6_ue
@@ -356,7 +372,7 @@ t_s,gauge1_ue,gauge2_ue,gauge3_ue,gauge4_ue,gauge5_ue,gauge6_ue
 - Values are microstrain (µε, 1e-6 m/m) to 2 decimal places, with tension positive.
 - They're only as accurate as the hardware constants in `strain.py` (see [strain.py](#strainpy)).
 
-### 4. Strain plots (`strain_logs/4_strain_plots/`)
+### 5. Strain plots (`strain_logs/5_strain_plots/`)
 
 PNG, 1800 × 1200 px. There are six panels, one per gauge, in pairs (1-2, 3-4, 5-6), on shared axes. Lines break where samples are missing. The subtitle notes the placeholder constants and any gaps. Zoomed plots made with `--start` / `--end` have the time window in their name.
 
