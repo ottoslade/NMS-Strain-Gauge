@@ -160,7 +160,8 @@ void measureGaugesTask(void *argument)
    */
   while (1)
   {
-    if (sd_card_position == SD_CARD_INSERTED && !logging_active && init_logging())
+    // init_logging() returns FR_OK (0) on success
+    if (sd_card_position == SD_CARD_INSERTED && !logging_active && init_logging() == FR_OK)
     {
       logging_active = true;
     }
