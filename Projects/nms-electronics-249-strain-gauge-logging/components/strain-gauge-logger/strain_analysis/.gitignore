@@ -1,12 +1,17 @@
 # ---- Log data ----
 # strain_logs/1_raw_blf/       .blf logs copied off the SD card or made by fake_blf.py
+# strain_logs/1_raw_gps/       GPS track CSVs (real, or made by fake_gps.py)
 # strain_logs/2_voltage_csv/    volts per gauge, decoded by read_blf.py
 # strain_logs/3_voltage_plots/  voltage PNGs from pipeline.py / plot_strain.py --volts
 # strain_logs/4_strain_csv/     microstrain per gauge, from strain.py
 # strain_logs/5_strain_plots/   strain PNGs from pipeline.py / plot_strain.py
+# strain_logs/6_strain_gps_csv/ strain (or volts) plus GPS position per sample, from gps.py
+# strain_logs/7_strain_maps/    track maps coloured by strain, from gps.py / pipeline.py
 # All of these are data, not code, and can be large. Keep the folders, not the files.
 strain_logs/1_raw_blf/*
 !strain_logs/1_raw_blf/.gitkeep
+strain_logs/1_raw_gps/*
+!strain_logs/1_raw_gps/.gitkeep
 strain_logs/2_voltage_csv/*
 !strain_logs/2_voltage_csv/.gitkeep
 strain_logs/3_voltage_plots/*
@@ -15,6 +20,10 @@ strain_logs/4_strain_csv/*
 !strain_logs/4_strain_csv/.gitkeep
 strain_logs/5_strain_plots/*
 !strain_logs/5_strain_plots/.gitkeep
+strain_logs/6_strain_gps_csv/*
+!strain_logs/6_strain_gps_csv/.gitkeep
+strain_logs/7_strain_maps/*
+!strain_logs/7_strain_maps/.gitkeep
 # Anything else dropped straight into strain_logs/
 strain_logs/*.blf
 strain_logs/*.csv

@@ -4,6 +4,7 @@ Run the whole analysis pipeline on one .blf log and report each step.
     python pipeline.py path/to/strain_gauge_log_000.blf                  # voltage + strain
     python pipeline.py path/to/strain_gauge_log_000.blf --plot voltage   # voltage only
     python pipeline.py path/to/strain_gauge_log_000.blf --plot strain    # strain only
+    python pipeline.py path/to/strain_gauge_log_000.blf --gps track.csv  # add GPS track maps
 
 The logger's sample rate and smoothing are read from the log itself (see
 Core/Inc/logger_config.h), shown in the summary and on every plot.
@@ -14,6 +15,13 @@ Steps (same as running the scripts one after another):
   voltage plot   save strain_logs/3_voltage_plots/<name>.png          (unless --plot strain)
   strain         convert to microstrain, save strain_logs/4_strain_csv/<name>_strain.csv
   strain plot    save strain_logs/5_strain_plots/<name>.png           (both unless --plot voltage)
+  gps map        position for every sample and a track map per gauge:
+                 strain_logs/6_strain_gps_csv/ and 7_strain_maps/  (if there is GPS data)
+
+GPS: pass --gps track.csv, or put the track at strain_logs/1_raw_gps/<log name>.csv
+and it is used automatically (fake_gps.py --match-log does this). The map shows
+strain, or voltage with --plot voltage. See gps.py for the CSV format and how the
+GPS and logger clocks are lined up; --gps-offset corrects a known clock difference.
 
 --plot voltage skips the strain steps entirely, so it doesn't depend on the
 hardware constants in strain.py. The plots made are opened at the end.
@@ -33,6 +41,7 @@ matplotlib.use("Agg")
 import pandas as pd
 
 import check_blf
+import gps
 import plot_strain
 import read_blf
 import strain
@@ -117,20 +126,57 @@ def step_strain_plot(log, ue, stem):
     return PASS, short(out), out
 
 
+def step_gps(log, stem, gps_path, offset, values, cols, suffix):
+    """Merge with the GPS track and draw the track maps."""
+    try:
+        track = gps.load_gps(gps_path)
+    except (OSError, ValueError) as e:
+        return FAIL, f"can't read GPS file: {e}", None
+    print(f"    GPS: {os.path.basename(gps_path)}: {track.describe()}")
+    df, info = gps.merge(log, track, values, cols, offset)
+    print(f"    alignment: {info['alignment']}")
+    print(f"    coverage: {info['coverage'] * 100:.1f}% of samples have a position")
+    kind = "strain" if suffix == "_ue" else "volts"
+    os.makedirs(gps.GPS_CSV_DIR, exist_ok=True)
+    os.makedirs(gps.MAP_DIR, exist_ok=True)
+    csv_out = os.path.join(gps.GPS_CSV_DIR, f"{stem}_{kind}_gps.csv")
+    df.to_csv(csv_out, float_format="%.7g")
+    png = os.path.join(gps.MAP_DIR, f"{stem}{'' if kind == 'strain' else '_volts'}.png")
+    what = "Strain" if kind == "strain" else "Voltage"
+    gps.plot_map(df, info, f"{what} around the track - {stem}", png, suffix, settings=read_blf.short_settings(log))
+
+    problems = []
+    if not info["clock_ok"]:
+        problems.append(info["alignment"] + " (use --gps-offset if that's wrong)")
+    if info["coverage"] < 0.9:
+        problems.append(f"only {info['coverage'] * 100:.0f}% of samples have a position (GPS gaps or short track)")
+    if info["coverage"] == 0:
+        return FAIL, "no strain samples fall within the GPS track", png
+    detail = f"{short(csv_out)}, {short(png)}"
+    return (WARN, "; ".join(problems) + f" ({detail})", png) if problems else (PASS, detail, png)
+
+
 def main():
     p = argparse.ArgumentParser(description="Run the whole pipeline on one .blf log.")
     p.add_argument("log", help="the .blf log to process")
     p.add_argument("--plot", choices=("both", "voltage", "strain"), default="both",
                    help="which plots to make (default both); 'voltage' skips the strain steps")
+    p.add_argument("--gps", help="GPS track CSV (default: strain_logs/1_raw_gps/<log name>.csv if it exists)")
+    p.add_argument("--no-gps", action="store_true", help="skip the GPS step even if a matching file exists")
+    p.add_argument("--gps-offset", type=float, default=0.0,
+                   help="seconds to add to GPS times (positive = GPS later); default 0")
     args = p.parse_args()
     path = args.log
     if not os.path.isfile(path):
         sys.exit(f"File not found: {path}")
+    if args.gps and not os.path.isfile(args.gps):
+        sys.exit(f"GPS file not found: {args.gps}")
 
     do_volts = args.plot in ("both", "voltage")
     do_strain = args.plot in ("both", "strain")
+    gps_path = None if args.no_gps else (args.gps or gps.find_gps_for(path))
     steps = ["read_blf", "check_blf"] + (["voltage plot"] if do_volts else []) \
-        + (["strain", "strain plot"] if do_strain else [])
+        + (["strain", "strain plot"] if do_strain else []) + (["gps map"] if gps_path else [])
 
     def header(name):
         print(f"\n== {steps.index(name) + 1}/{len(steps)} {name}")
@@ -160,6 +206,16 @@ def main():
             results.append(("strain plot", status, msg))
             pngs.append(png)
             print(f"    {msg}")
+        if gps_path:
+            header("gps map")
+            if do_strain:
+                values, cols, suffix = ue, [f"{g['name']}_ue" for g in strain.GAUGES], "_ue"
+            else:
+                values, cols, suffix = log.gauges, [f"gauge{g}_v" for g in range(1, 7)], "_v"
+            status, msg, png = step_gps(log, stem, gps_path, args.gps_offset, values, cols, suffix)
+            results.append(("gps map", status, msg))
+            if png:
+                pngs.append(png)
 
     print("\n== Summary: " + os.path.basename(path))
     for name, status, msg in results:
