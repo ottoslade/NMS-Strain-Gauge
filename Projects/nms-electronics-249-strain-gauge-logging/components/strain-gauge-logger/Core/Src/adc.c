@@ -23,7 +23,6 @@
 /* USER CODE BEGIN 0 */
 #include "FreeRTOS.h"
 #include "logger_config.h"
-#include <math.h>
 #include <string.h>
 
 // Smoothing: ADC scans averaged per reading, set in logger_config.h
@@ -308,11 +307,19 @@ void adcInit(void)
 {
   MX_ADC1_Init();
 
-  // Start continuously sending adc register value to adc1Buffer for all channels
+  // DMA fills adc1Buffer continuously with the last ADC1_SAMPLES_PER_CHANNEL
+  // scans, channel-interleaved: rank 1, rank 2, ... rank N, rank 1, ...
   adc1BufferLength = hadc1.Init.NbrOfConversion * ADC1_SAMPLES_PER_CHANNEL;
   adc1Buffer = pvPortMalloc(adc1BufferLength * sizeof(uint16_t));
+  if (adc1Buffer == NULL)
+  {
+    Error_Handler(); // FreeRTOS heap too small for the averaging buffer (ADC_AVG_SAMPLES)
+  }
   memset(adc1Buffer, 0, adc1BufferLength * sizeof(uint16_t));
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc1Buffer, adc1BufferLength);
+  if (HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc1Buffer, adc1BufferLength) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
   // MX_ADC2_Init();
 
@@ -323,35 +330,42 @@ void adcInit(void)
 }
 
 /**
- * @brief 				      Get average of last "buffer_length" samples for one ADC input
- * @param channel		    The channel number of input with respect to the ADCx. First ADC1 = 0, Second ADC1 = 1, First ADC2 = 0, etc.
- * @param *buffer		    Pointer to the location of all of ADCx buffer data
- * @param buffer_length	Channel elements recorded per buffer (Defined at top of file). Must be power of 2.
- * @param num_channels	Total number of channels being polled on ADCx.
- * @return average		  The average value of the last "buffer_length" amount of samples"
+ * @brief               Average of all samples of one ADC rank in a DMA buffer
+ * @param rank          Rank of the channel in the ADC scan, starting at 1 (gauge 1 = rank 1)
+ * @param buffer        ADCx DMA buffer, channel-interleaved; written by DMA in the background
+ * @param buffer_length Total elements in the buffer (num_channels * samples per channel)
+ * @param num_channels  Number of channels in the ADCx scan
+ * @return              Average raw ADC count, or 0 if the rank or buffer is invalid
  */
-static uint32_t calculate_channel_average(int channel, uint16_t *buffer, int buffer_length,
-                                          uint32_t num_channels)
+static uint32_t calculate_channel_average(uint32_t rank, const volatile uint16_t *buffer,
+                                          uint32_t buffer_length, uint32_t num_channels)
 {
-  channel -= 1; //accounts for the zeroing of the ranks (rank 1 = 0)
-  uint32_t sum = 0;
-  for (int i = channel; i < buffer_length; i += num_channels)
-  {
-    sum += buffer[i];
-  }
-  uint32_t num_samples = buffer_length / num_channels;
-
-  if (num_samples == 0)
+  if (buffer == NULL || num_channels == 0 || rank < 1 || rank > num_channels)
   {
     return 0;
   }
 
+  uint32_t sum = 0;
+  for (uint32_t i = rank - 1; i < buffer_length; i += num_channels)
+  {
+    sum += buffer[i];
+  }
+
+  uint32_t num_samples = buffer_length / num_channels;
+  if (num_samples == 0)
+  {
+    return 0;
+  }
   return sum / num_samples;
 }
 
 uint32_t get_adc_value(int channel)
 {
-  return calculate_channel_average(channel,
+  if (channel < 1)
+  {
+    return 0;
+  }
+  return calculate_channel_average((uint32_t)channel,
                                    adc1Buffer,
                                    adc1BufferLength,
                                    hadc1.Init.NbrOfConversion);

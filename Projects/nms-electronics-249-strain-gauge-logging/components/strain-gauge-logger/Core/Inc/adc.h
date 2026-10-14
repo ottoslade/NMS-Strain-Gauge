@@ -46,13 +46,15 @@ extern ADC_HandleTypeDef hadc2;
 
 #define ADC_TOTAL_BITS 4095
 
-#define ADC1_CHANNEL_AMOUNT 5
+#define ADC1_CHANNEL_AMOUNT 6 // must match hadc1.Init.NbrOfConversion
 
+// ADC1 scan rank of each gauge (PA0..PA5 = ranks 1..6); pass to get_adc_voltage()
 #define GAUGE1_SENSOR_RANK 1
 #define GAUGE2_SENSOR_RANK 2
 #define GAUGE3_SENSOR_RANK 3
 #define GAUGE4_SENSOR_RANK 4
 #define GAUGE5_SENSOR_RANK 5
+#define GAUGE6_SENSOR_RANK 6
 
 /* USER CODE END Private defines */
 
@@ -67,18 +69,19 @@ void MX_ADC2_Init(void);
 void adcInit(void);
 
 /**
- * @brief Gets the raw ADC value for a specific channel.
- * 
- * @param channel ADC channel
- * @return uint32_t raw ADC value averaged over the samples
+ * @brief Gets the raw ADC value for a specific channel, averaged over the
+ *        last ADC_AVG_SAMPLES scans (see logger_config.h).
+ *
+ * @param channel ADC1 scan rank, starting at 1 (GAUGE1_SENSOR_RANK ... GAUGE6_SENSOR_RANK)
+ * @return uint32_t averaged raw ADC count (0-4095), or 0 for an invalid channel
  */
 uint32_t get_adc_value(int channel);
 
 /**
  * @brief Gets the voltage for a specific ADC channel.
- * 
- * @param channel ADC channel
- * @return float voltage in volts
+ *
+ * @param channel ADC1 scan rank, starting at 1 (GAUGE1_SENSOR_RANK ... GAUGE6_SENSOR_RANK)
+ * @return float voltage in volts (0-3.3), or 0 for an invalid channel
  */
 float get_adc_voltage(int channel);
 /* USER CODE END Prototypes */
