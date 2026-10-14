@@ -71,13 +71,19 @@ def load_volts(path):
     return df
 
 
-def break_at_gaps(df, sample_s=0.001):
+def break_at_gaps(df, sample_s=None):
     """Insert a NaN row inside every gap so the plotted line breaks there
     instead of drawing a straight ramp across missing data. Uses the same
-    rule as read_blf.py: a step longer than 1.5 samples is a gap.
-    Returns (df, number of gaps, samples missing)."""
+    rule as read_blf.py: a step longer than 1.5 sample periods is a gap.
+    The sample period defaults to the most common step in the data, so any
+    logger sample rate works. Returns (df, number of gaps, samples missing)."""
     t = df.index.to_numpy()
     steps = t[1:] - t[:-1]
+    if sample_s is None:
+        if not len(steps):
+            return df, 0, 0
+        rounded = pd.Series(steps).round(6)  # CSV times are rounded; group to the us
+        sample_s = float(rounded.mode().iloc[0])
     at = steps > 1.5 * sample_s
     if not at.any():
         return df, 0, 0
@@ -86,15 +92,18 @@ def break_at_gaps(df, sample_s=0.001):
     return pd.concat([df, blanks]).sort_index(), int(at.sum()), missing
 
 
-def plot(df, title, out_path, show=False, placeholder=False):
-    """Strain plot: microstrain columns (gaugeN_ue), with a zero line."""
-    notes = ["Placeholder hardware constants in strain.py: magnitudes are illustrative only"] if placeholder else []
+def plot(df, title, out_path, show=False, placeholder=False, settings=None):
+    """Strain plot: microstrain columns (gaugeN_ue), with a zero line.
+    settings: optional label for the logger settings, shown in the subtitle."""
+    notes = [settings] if settings else []
+    if placeholder:
+        notes.append("Placeholder hardware constants in strain.py: magnitudes are illustrative only")
     _plot_panels(df, "_ue", "Strain (µε)", True, title, out_path, show, notes)
 
 
-def plot_voltage(df, title, out_path, show=False):
+def plot_voltage(df, title, out_path, show=False, settings=None):
     """Voltage plot: raw gauge volts (gaugeN_v) as logged, no conversion."""
-    _plot_panels(df, "_v", "Voltage (V)", False, title, out_path, show, [])
+    _plot_panels(df, "_v", "Voltage (V)", False, title, out_path, show, [settings] if settings else [])
 
 
 def _plot_panels(df, suffix, ylabel, zero_line, title, out_path, show, notes):
@@ -171,10 +180,11 @@ def main():
         out = os.path.join(out_dir, f"{stem}_{span}.png" if span else f"{stem}.png")
         what = "Voltage" if args.volts else "Strain"
         title = f"{what} by gauge - {stem}" + (f" ({span})" if span else "")
+        settings = read_blf.short_settings(read_blf.read_log(path)) if path.lower().endswith(".blf") else None
         if args.volts:
-            plot_voltage(df, title, out, args.show)
+            plot_voltage(df, title, out, args.show, settings=settings)
         else:
-            plot(df, title, out, args.show, placeholder=not strain.CONSTANTS_VERIFIED)
+            plot(df, title, out, args.show, placeholder=not strain.CONSTANTS_VERIFIED, settings=settings)
         print(f"{os.path.basename(path)} -> {out}")
 
 

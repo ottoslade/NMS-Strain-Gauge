@@ -11,6 +11,7 @@
 
 #include "VEHICLE_CAN.h"
 #include "fatfs.h"
+#include "logger_config.h"
 #include "nms_can.h"
 #include "rtc.h"
 #include "util.h"
@@ -92,11 +93,11 @@ static FRESULT blf_update_container()
 {
   FRESULT res = 0;
 
-  if ((res = f_lseek(&SDFile, container_fp) != FR_OK))
+  if ((res = f_lseek(&SDFile, container_fp)) != FR_OK)
     return res;
 
   UINT written = 0;
-  if ((res = f_write(&SDFile, &container, sizeof(container), &written) != FR_OK))
+  if ((res = f_write(&SDFile, &container, sizeof(container), &written)) != FR_OK)
     return res;
   if (written < sizeof(container))
     return FR_DENIED; // volume full!
@@ -111,6 +112,45 @@ static FRESULT blf_write_new_container()
 {
   container.baseHeader.objectSize = sizeof(BLF_Container);
   container_fp = f_size(&SDFile);
+  return blf_update_container();
+}
+
+/**
+ * Write the config record: one CAN message object (LOG_CONFIG_CAN_ID) holding
+ * the sample period and smoothing settings, so the PC tools know how this file
+ * was recorded. Byte layout is described in logger_config.h.
+ */
+static FRESULT blf_write_config(void)
+{
+  BLF_CanMessage msg = {.baseHeader2 = {.signature = {'L', 'O', 'B', 'J'},
+                                        .headerSize = sizeof(BLF_BaseObjectHeader),
+                                        .headerVersion = 1,
+                                        .objectSize = sizeof(BLF_CanMessage),
+                                        .objectType = 0x1},
+                        .v1Header = {.flags = 1, .clientIndex = 0, .objectVersion = 1, .timestamp = 0},
+                        .channel = VEHICLE_CAN,
+                        .flags = 0,
+                        .dlc = 8,
+                        .id = LOG_CONFIG_CAN_ID};
+  const uint16_t avg_samples = ADC_AVG_SAMPLES;
+  const uint32_t period_us = LOG_SAMPLE_PERIOD_MS * 1000u;
+  msg.data[0] = LOG_CONFIG_VERSION;
+  msg.data[1] = ADC_SCAN_PERIOD_US;
+  memcpy(&msg.data[2], &avg_samples, sizeof(avg_samples)); // little-endian on Cortex-M
+  memcpy(&msg.data[4], &period_us, sizeof(period_us));
+
+  UINT written = 0;
+  FRESULT res = f_write(&SDFile, &msg, sizeof(msg), &written);
+  if (res != FR_OK)
+    return res;
+  if (written < sizeof(msg))
+    return FR_DENIED; // volume full!
+
+  header.fileSize += sizeof(msg);
+  header.countObjects += 1;
+  container.baseHeader.objectSize += sizeof(msg);
+  if ((res = blf_update_header()) != FR_OK)
+    return res;
   return blf_update_container();
 }
 
@@ -226,6 +266,8 @@ FRESULT init_logging(void)
   res = blf_write_header(&SDFile);
   if (res == FR_OK)
     res = blf_write_new_container();
+  if (res == FR_OK)
+    res = blf_write_config();
   if (res != FR_OK)
   {
     f_close(&SDFile);

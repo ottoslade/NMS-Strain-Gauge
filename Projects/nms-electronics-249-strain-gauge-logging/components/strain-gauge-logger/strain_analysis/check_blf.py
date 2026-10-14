@@ -32,6 +32,7 @@ EXE = os.path.join(FW_DIR, "fw_writer.exe" if os.name == "nt" else "fw_writer")
 # so this works on its own. If the original is next door, warn when they differ.
 SHARED_BLF_H = os.path.normpath(os.path.join(HERE, "..", "..", "..", "shared", "blf", "blf.h"))
 NORTC = (2026, 3, 0, 1, 0, 0, 0, 0)  # header time when the RTC was never synced
+CONFIG_CAN_ID = 0x323  # LOG_CONFIG_CAN_ID in Core/Inc/logger_config.h
 FIELDS = {range(40, 42): "year", range(42, 44): "month", range(44, 46): "weekday",
           range(46, 48): "day", range(48, 54): "time", range(54, 56): "milliseconds",
           range(16, 24): "fileSize", range(32, 36): "countObjects"}
@@ -46,7 +47,9 @@ def warn_if_blf_h_stale():
 
 def build(force=False):
     warn_if_blf_h_stale()
-    if os.path.exists(EXE) and not force:
+    sources = [os.path.join(FW_DIR, f) for f in os.listdir(FW_DIR) if f.endswith((".c", ".h"))]
+    up_to_date = os.path.exists(EXE) and os.path.getmtime(EXE) >= max(map(os.path.getmtime, sources))
+    if up_to_date and not force:
         return
     cmd = ["gcc", "-std=c11", "-Wall", "-O0", f"-I{FW_DIR}",
            os.path.join(FW_DIR, "fw_writer.c"), "-o", EXE]
@@ -57,13 +60,29 @@ def build(force=False):
         sys.exit("gcc not found. Install a C compiler (e.g. TDM-GCC or MSYS2) and add it to PATH.")
 
 
-def field_name(offset):
+def field_name(offset, has_record=False):
+    if has_record and 176 <= offset < 224:
+        return "config record"
     if offset >= 176:
-        return f"message {(offset - 176) // 48}"
+        return f"message {(offset - (224 if has_record else 176)) // 48}"
     for r, name in FIELDS.items():
         if offset in r:
             return f"header {name}"
     return "container" if offset >= 144 else "header"
+
+
+def read_config(data):
+    """(period_ms, avg_samples, scan_us, has_record) from the config record that
+    current firmware writes first (CAN ID 0x323). Older files have no record:
+    the period is then taken from the timestamps and avg_samples is 0."""
+    if len(data) >= 224 and struct.unpack_from("<I", data, 176 + 36)[0] == CONFIG_CAN_ID:
+        _version, scan_us, avg = struct.unpack_from("<BBH", data, 176 + 40)
+        period_us = struct.unpack_from("<I", data, 176 + 44)[0]
+        return period_us // 1000, avg, scan_us, True
+    if len(data) >= 176 + 4 * 48:  # step between the first two samples, in 10 us units
+        step = struct.unpack_from("<Q", data, 176 + 3 * 48 + 24)[0] - struct.unpack_from("<Q", data, 176 + 24)[0]
+        return max(step // 100, 1), 0, 0, False
+    return 1, 0, 0, False
 
 
 def check(path):
@@ -72,10 +91,13 @@ def check(path):
         return False, "not a strain gauge BLF file"
     st = struct.unpack_from("<8H", data, 40)
     year, month, _weekday, day, h, m, s, ms = st
-    n_msgs = (len(data) - 176) // 48
-    first_ts = struct.unpack_from("<Q", data, 176 + 24)[0] if n_msgs else 0
+    period_ms, avg, scan_us, has_record = read_config(data)
+    start = 224 if has_record else 176  # first gauge message
+    n_msgs = (len(data) - start) // 48
+    first_ts = struct.unpack_from("<Q", data, start + 24)[0] if n_msgs else 0
     ssr = next((x for x in range(1024) if (1023 - x) * 1000 // 1024 == ms), 0)
-    args = [int(st != NORTC), year % 100, month, day, h, m, s, ssr, first_ts // 100, n_msgs // 3]
+    args = [int(st != NORTC), year % 100, month, day, h, m, s, ssr,
+            first_ts // (100 * period_ms), n_msgs // 3, period_ms, avg, scan_us]
 
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "rebuilt.blf")
@@ -88,7 +110,7 @@ def check(path):
     msg = f"{len(diffs) + abs(len(data) - len(rebuilt))} byte(s) differ"
     if len(data) != len(rebuilt):
         msg += f", size {len(data):,} vs firmware {len(rebuilt):,}"
-    where = sorted({field_name(i) for i in diffs[:200]})
+    where = sorted({field_name(i, has_record) for i in diffs[:200]})
     if where:
         msg += f" in: {', '.join(where[:6])}"
     if any(i in (40, 41) for i in diffs):

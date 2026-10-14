@@ -56,7 +56,8 @@ V1_HEADER = struct.Struct("<IHHQ")                # 16 B
 CAN_BODY = struct.Struct("<HBBI8s")               # 16 B
 OBJ_CAN_MESSAGE = 0x01
 OBJ_LOG_CONTAINER = 0x0A
-SAMPLE_US = 1000  # firmware samples every 1 ms
+CONFIG_CAN_ID = 0x323     # config record: LOG_CONFIG_CAN_ID in Core/Inc/logger_config.h
+DEFAULT_SAMPLE_US = 1000  # sample period assumed if a log has neither a record nor enough samples
 
 
 class StrainLog:
@@ -73,8 +74,24 @@ class StrainLog:
         self.other_msgs = 0      # messages with unexpected CAN IDs (ignored)
         self.truncated = False   # file ended part-way through a message
         self.header_count = 0    # message count the header claims
-        self.gaps = []           # (t before, t after, samples missing) for each break in the 1 ms sequence
-        self.irregular = 0       # steps between samples that aren't a whole number of ms
+        self.gaps = []           # (t before, t after, samples missing) for each break in the sample sequence
+        self.irregular = 0       # steps between samples that aren't a whole number of sample periods
+        # Board settings, from the config record the firmware writes first in each log
+        self.sample_period_s = DEFAULT_SAMPLE_US / 1e6
+        self.adc_avg = None      # ADC scans averaged per reading (smoothing); None = unknown
+        self.adc_scan_us = None  # time per ADC scan of all six gauges
+        self.config_source = "default"  # "record", "timestamps" (inferred) or "default"
+
+    @property
+    def sample_rate_hz(self):
+        return 1 / self.sample_period_s
+
+    @property
+    def smoothing_window_s(self):
+        """Time span each logged value is averaged over, or None if unknown."""
+        if self.adc_avg is None or self.adc_scan_us is None:
+            return None
+        return self.adc_avg * self.adc_scan_us / 1e6
 
     @property
     def missing(self):
@@ -86,7 +103,7 @@ class StrainLog:
 
     @property
     def duration(self):
-        return self.t[-1] - self.t[0] + 0.001 if self.t else 0.0
+        return self.t[-1] - self.t[0] + self.sample_period_s if self.t else 0.0
 
     def as_array(self):
         """(t, v): numpy arrays of shape (N,) and (N, 6)."""
@@ -159,7 +176,11 @@ def read_log(path):
             flags, _, _, ts = V1_HEADER.unpack_from(data, body)
             _, _, dlc, can_id, payload = CAN_BODY.unpack_from(data, body + V1_HEADER.size)
             ticks = ts * 10 if flags == 1 else ts // 1000  # -> microseconds
-            if can_id in CAN_IDS and dlc == 8:
+            if can_id == CONFIG_CAN_ID and dlc == 8:
+                _version, log.adc_scan_us, log.adc_avg, period_us = struct.unpack("<BBHI", payload)
+                log.sample_period_s = period_us / 1e6
+                log.config_source = "record"
+            elif can_id in CAN_IDS and dlc == 8:
                 k = CAN_IDS.index(can_id)
                 row = samples.setdefault(ticks, [None] * 6)
                 row[2 * k], row[2 * k + 1] = struct.unpack("<ff", payload)
@@ -180,17 +201,24 @@ def read_log(path):
         for g in range(6):
             log.gauges[g].append(row[g])
 
-    # The firmware stamps every 1 ms loop, logged or not, so a dropped sample
+    # Logs from before the config record existed: the sample period is the
+    # most common step between samples (gaps don't change the most common one).
+    steps = [b - a for a, b in zip(kept, kept[1:])]
+    if log.config_source != "record" and steps:
+        log.sample_period_s = max(set(steps), key=steps.count) / 1e6
+        log.config_source = "timestamps"
+    period_us = round(log.sample_period_s * 1e6)
+
+    # The firmware stamps every loop, logged or not, so a dropped sample
     # (SD card stalled, or an incomplete sample removed above) leaves a jump.
-    for prev, cur in zip(kept, kept[1:]):
-        step = cur - prev
-        if step == SAMPLE_US:
+    for prev, cur, step in zip(kept, kept[1:], steps):
+        if step == period_us:
             continue
-        if step % SAMPLE_US:
+        if step % period_us:
             log.irregular += 1
         # samples that fit in the step, rounding halves down so a late
-        # sample (e.g. a 1.5 ms step) isn't counted as a missing one
-        missing = (step + SAMPLE_US // 2 - 1) // SAMPLE_US - 1
+        # sample (e.g. a 1.5-period step) isn't counted as a missing one
+        missing = (step + period_us // 2 - 1) // period_us - 1
         if missing > 0:
             log.gaps.append((prev / 1e6, cur / 1e6, missing))
     return log
@@ -272,6 +300,27 @@ def copy_logs(src_folder, dest_folder=RAW_DIR):
 
 # ---------- command line ----------
 
+def describe_settings(log):
+    """One line: sample rate and smoothing, and where they came from."""
+    period_ms = log.sample_period_s * 1000
+    rate = f"sampling {log.sample_rate_hz:g} Hz ({period_ms:g} ms)"
+    if log.config_source == "timestamps":
+        rate += ", inferred from timestamps"
+    window = log.smoothing_window_s
+    if window is None:
+        smooth = "smoothing unknown (no config record; firmware before it was configurable used 8 scans = 0.48 ms)"
+    else:
+        smooth = f"smoothing {log.adc_avg} ADC scan(s) = {window * 1000:g} ms"
+    return f"{rate}; {smooth}"
+
+
+def short_settings(log):
+    """Compact settings label for plot subtitles and summaries."""
+    window = log.smoothing_window_s
+    smooth = f"{log.adc_avg}-scan smoothing ({window * 1000:g} ms)" if window else "smoothing unknown"
+    return f"{log.sample_rate_hz:g} Hz, {smooth}"
+
+
 def summarise(log):
     name = os.path.basename(log.path)
     if not log:
@@ -279,6 +328,7 @@ def summarise(log):
         return
     when = f"{log.start:%Y-%m-%d %H:%M:%S}" if log.rtc_synced else "RTC not synced"
     print(f"{name}: {len(log)} samples, {log.duration:.3f} s, started {when}")
+    print("    " + describe_settings(log))
     notes = []
     if log.year_may_be_wrong:
         notes.append("start year may read too high (firmware RTC bug)")
@@ -288,10 +338,11 @@ def summarise(log):
         notes.append(f"{log.other_msgs} unexpected messages ignored")
     if log.truncated:
         notes.append("file ends mid-message (power cut?)")
-    if log.header_count != len(log) * 3:
-        notes.append(f"header says {log.header_count} messages, found {len(log) * 3}")
+    found = len(log) * 3 + (log.config_source == "record")
+    if log.header_count != found:
+        notes.append(f"header says {log.header_count} messages, found {found}")
     if log.irregular:
-        notes.append(f"{log.irregular} irregular time steps (not a whole number of ms)")
+        notes.append(f"{log.irregular} irregular time steps (not a whole number of sample periods)")
     if notes:
         print("    " + "; ".join(notes))
     if log.gaps:
@@ -302,7 +353,7 @@ def summarise(log):
         if len(log.gaps) > 5:
             print(f"        ... and {len(log.gaps) - 5} smaller gap(s); see log.gaps")
     else:
-        print("    no gaps: every 1 ms sample present")
+        print("    no gaps: every sample present")
     for g, v in enumerate(log.gauges, 1):
         print(f"    gauge {g}: min {min(v):.4f} V  max {max(v):.4f} V  mean {sum(v) / len(v):.4f} V")
 

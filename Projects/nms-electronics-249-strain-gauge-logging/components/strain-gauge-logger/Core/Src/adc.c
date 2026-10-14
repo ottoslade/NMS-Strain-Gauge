@@ -22,11 +22,13 @@
 
 /* USER CODE BEGIN 0 */
 #include "FreeRTOS.h"
+#include "logger_config.h"
 #include <math.h>
 #include <string.h>
 
-#define ADC1_SAMPLES_PER_CHANNEL 8 //Must be power of 2
-#define ADC2_SAMPLES_PER_CHANNEL 8 //Must be power of 2
+// Smoothing: ADC scans averaged per reading, set in logger_config.h
+#define ADC1_SAMPLES_PER_CHANNEL ADC_AVG_SAMPLES
+#define ADC2_SAMPLES_PER_CHANNEL 8
 
 #define ADC_TOTAL_VOLTS 3.3f
 

@@ -7,14 +7,22 @@ is needed.
 
     python fake_blf.py                          # 10 s -> strain_logs/1_raw_blf/strain_gauge_log_<date>_<time>.blf
     python fake_blf.py -d 60 -o run.blf --csv run_truth.csv
+    python fake_blf.py --period-ms 5 --avg 32   # match firmware built with those settings
 
 File layout (all little-endian, packed):
     144 B  BLF_FileHeader   "LOGG"
      32 B  BLF_Container    "LOBJ" type 0x0A, uncompressed
+     48 B  BLF_CanMessage   "LOBJ" type 0x01, CAN ID 0x323: config record
+                            (sample period, ADC averaging; see Core/Inc/logger_config.h)
      48 B  BLF_CanMessage   "LOBJ" type 0x01, repeated
 CAN IDs 0x320 / 0x321 / 0x322 each carry two float32 gauge voltages
-(gauges 1-2, 3-4, 5-6). One set of three messages per 1 ms, timestamps in
-10 us units (flag 1).
+(gauges 1-2, 3-4, 5-6). One set of three messages per sample period,
+timestamps in 10 us units (flag 1).
+
+--period-ms and --avg mirror LOG_SAMPLE_PERIOD_MS and ADC_AVG_SAMPLES in the
+firmware. The ADC is simulated scan by scan: each logged value is the
+integer average of --avg readings taken 60 us apart, so smoothing behaves
+like the real board.
 
 Every field matches what the firmware writes, including its quirks: the
 2-digit RTC year (and the year/weekday corruption from rtcTask's WeekDay
@@ -33,9 +41,13 @@ import os
 # ---- firmware constants ----
 CAN_IDS = (0x320, 0x321, 0x322)  # SGL_STRAIN_GAUGES_1_2 / 3_4 / 5_6
 VEHICLE_CAN = 0                  # BLF channel field written by the firmware
-SAMPLE_PERIOD_TICKS = 100        # 1 ms in 10 us units
+TICKS_PER_MS = 100               # timestamps are in 10 us units
 BATCH_SAMPLES = 32               # STREAM_BUFFER_TRIGGER (96 msgs) / 3 msgs per sample
-ADC_SAMPLES_PER_CHANNEL = 8
+CONFIG_CAN_ID = 0x323            # LOG_CONFIG_CAN_ID       } Core/Inc/logger_config.h
+CONFIG_VERSION = 1               # LOG_CONFIG_VERSION      }
+ADC_SCAN_PERIOD_US = 60          # ADC_SCAN_PERIOD_US      }
+DEFAULT_PERIOD_MS = 1            # LOG_SAMPLE_PERIOD_MS default
+DEFAULT_AVG = 8                  # ADC_AVG_SAMPLES default
 ADC_TOTAL_BITS = 4095
 ADC_TOTAL_VOLTS = 3.3
 NORTC_DATE = (2026, 3, 1)        # _NORTC_* in FATFS/Target/ffconf.h
@@ -75,16 +87,24 @@ def gauge_signals(t):
     return out
 
 
-def adc_voltage(v, noise_v, rng):
-    """Reproduce get_adc_voltage(): average 8 noisy 12-bit samples with
-    integer division, then scale by 3.3 / 4095 and store as float32."""
-    total = 0
-    for _ in range(ADC_SAMPLES_PER_CHANNEL):
-        raw = round((v + rng.gauss(0.0, noise_v)) * ADC_TOTAL_BITS / ADC_TOTAL_VOLTS)
-        total += min(max(raw, 0), ADC_TOTAL_BITS)
-    raw_avg = total // ADC_SAMPLES_PER_CHANNEL
-    volts = raw_avg * (ADC_TOTAL_VOLTS / ADC_TOTAL_BITS)
-    return struct.unpack("<f", struct.pack("<f", volts))[0]
+def adc_voltages(t, avg, noise_v, rng):
+    """Reproduce get_adc_voltage() for all six gauges at time t: the DMA buffer
+    holds the last `avg` ADC scans (one every ADC_SCAN_PERIOD_US), each a noisy
+    12-bit reading; they are averaged with integer division, scaled by
+    3.3 / 4095 and stored as float32."""
+    totals = [0] * 6
+    for k in range(avg):
+        for g, v in enumerate(gauge_signals(t - k * ADC_SCAN_PERIOD_US * 1e-6)):
+            raw = round((v + rng.gauss(0.0, noise_v)) * ADC_TOTAL_BITS / ADC_TOTAL_VOLTS)
+            totals[g] += min(max(raw, 0), ADC_TOTAL_BITS)
+    return [struct.unpack("<f", struct.pack("<f", (tot // avg) * (ADC_TOTAL_VOLTS / ADC_TOTAL_BITS)))[0]
+            for tot in totals]
+
+
+def config_message(period_ms, avg):
+    """The config record blf_write_config() writes first in every log."""
+    data = struct.pack("<BBHI", CONFIG_VERSION, ADC_SCAN_PERIOD_US, avg, period_ms * 1000)
+    return can_message(CONFIG_CAN_ID, 0, data)
 
 
 def _bcd(n):
@@ -132,7 +152,7 @@ def default_out_path(when):
     this script, with _2, _3, ... added if that name is already taken."""
     log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "strain_logs", "1_raw_blf")
     os.makedirs(log_dir, exist_ok=True)
-    base =os.path.join(log_dir, f"strain_gauge_log_{when:%Y-%m-%d_%H-%M-%S}")
+    base = os.path.join(log_dir, f"strain_gauge_log_{when:%Y-%m-%d_%H-%M-%S}")
     path, n = base + ".blf", 2
     while os.path.exists(path):
         path, n = f"{base}_{n}.blf", n + 1
@@ -153,6 +173,12 @@ def main():
                    help="timestamp of the first sample in seconds (default 0). The firmware's "
                         "counter runs from boot, so a file opened after re-inserting the card "
                         "does not start at 0")
+    p.add_argument("--period-ms", type=int, default=DEFAULT_PERIOD_MS,
+                   help=f"sample period in whole ms, like LOG_SAMPLE_PERIOD_MS (default {DEFAULT_PERIOD_MS})")
+    p.add_argument("--avg", type=int, default=DEFAULT_AVG,
+                   help=f"ADC scans averaged per reading, like ADC_AVG_SAMPLES (default {DEFAULT_AVG})")
+    p.add_argument("--legacy", action="store_true",
+                   help="no config record, like firmware from before the settings were configurable")
     p.add_argument("--noise", type=float, default=0.004, help="ADC noise std dev in volts (default 0.004)")
     p.add_argument("--seed", type=int, default=0, help="random seed (default 0)")
     p.add_argument("--csv", help="also write the noise-free signals to this CSV (ground truth)")
@@ -166,10 +192,18 @@ def main():
     if args.no_rtc:
         start = None
 
+    if args.period_ms < 1:
+        p.error("--period-ms must be at least 1 (the firmware's FreeRTOS tick is 1 ms)")
+    if not 1 <= args.avg <= 1024:
+        p.error("--avg must be between 1 and 1024")
+    if args.legacy and (args.period_ms, args.avg) != (DEFAULT_PERIOD_MS, DEFAULT_AVG):
+        p.error("--legacy firmware only ran at 1 ms with 8-scan averaging")
+    period_ticks = args.period_ms * TICKS_PER_MS
+
     # The firmware only writes whole 96-message batches, so round down.
-    n_samples = int(args.duration * 1000) // BATCH_SAMPLES * BATCH_SAMPLES
-    n_msgs = n_samples * len(CAN_IDS)
-    t0_ticks = round(args.t0 * 1000) * SAMPLE_PERIOD_TICKS  # whole 1 ms loop iterations
+    n_samples = int(args.duration * 1000 / args.period_ms) // BATCH_SAMPLES * BATCH_SAMPLES
+    n_msgs = n_samples * len(CAN_IDS) + (0 if args.legacy else 1)  # + config record
+    t0_ticks = round(args.t0 * 1000 / args.period_ms) * period_ticks  # whole loop iterations
 
     truth = open(args.csv, "w", newline="") if args.csv else None
     if truth:
@@ -188,12 +222,14 @@ def main():
         f.write(BASE_HEADER.pack(b"LOBJ", BASE_HEADER.size, 1,
                                  CONTAINER_SIZE + n_msgs * CAN_MSG_SIZE, 0x0A))
         f.write(CONTAINER_HEADER.pack(0, 0))
+        if not args.legacy:
+            f.write(config_message(args.period_ms, args.avg))
 
         for i in range(n_samples):
-            t = i / 1000.0
+            t = i * args.period_ms / 1000.0
             ideal = gauge_signals(t)
-            volts = [adc_voltage(v, args.noise, rng) for v in ideal]
-            ts = t0_ticks + i * SAMPLE_PERIOD_TICKS
+            volts = adc_voltages(t, args.avg, args.noise, rng)
+            ts = t0_ticks + i * period_ticks
             for k, can_id in enumerate(CAN_IDS):
                 f.write(can_message(can_id, ts, struct.pack("<ff", volts[2 * k], volts[2 * k + 1])))
             if truth:
@@ -203,8 +239,9 @@ def main():
         truth.close()
 
     size = FILE_HEADER.size + CONTAINER_SIZE + n_msgs * CAN_MSG_SIZE
-    print(f"Wrote {args.out}: {n_samples} samples ({n_samples / 1000:.3f} s), "
-          f"{n_msgs} CAN messages, {size:,} bytes")
+    rate = 1000 / args.period_ms
+    print(f"Wrote {args.out}: {n_samples} samples ({n_samples * args.period_ms / 1000:.3f} s at {rate:g} Hz, "
+          f"{args.avg}-scan averaging), {n_msgs} CAN messages, {size:,} bytes")
 
 
 if __name__ == "__main__":

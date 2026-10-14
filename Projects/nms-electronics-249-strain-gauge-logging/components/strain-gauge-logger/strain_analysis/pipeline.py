@@ -5,6 +5,9 @@ Run the whole analysis pipeline on one .blf log and report each step.
     python pipeline.py path/to/strain_gauge_log_000.blf --plot voltage   # voltage only
     python pipeline.py path/to/strain_gauge_log_000.blf --plot strain    # strain only
 
+The logger's sample rate and smoothing are read from the log itself (see
+Core/Inc/logger_config.h), shown in the summary and on every plot.
+
 Steps (same as running the scripts one after another):
   read_blf       decode, check for gaps, save strain_logs/2_voltage_csv/<name>.csv
   check_blf      byte-compare the file with the firmware's write code
@@ -58,7 +61,7 @@ def step_read(path):
         problems.append("file ends mid-message")
     if log.irregular:
         problems.append(f"{log.irregular} irregular time steps")
-    detail = f"{len(log)} samples, {log.duration:.3f} s -> {short(out)}"
+    detail = f"{len(log)} samples, {log.duration:.3f} s, {read_blf.short_settings(log)} -> {short(out)}"
     return (WARN, "; ".join(problems) + f" ({detail})", log) if problems else (PASS, detail, log)
 
 
@@ -80,7 +83,7 @@ def step_voltage_plot(log, stem):
                       index=pd.Index(log.t, name="t_s"))
     os.makedirs(plot_strain.VOLT_PLOT_DIR, exist_ok=True)
     out = os.path.join(plot_strain.VOLT_PLOT_DIR, f"{stem}.png")
-    plot_strain.plot_voltage(df, f"Voltage by gauge - {stem}", out)
+    plot_strain.plot_voltage(df, f"Voltage by gauge - {stem}", out, settings=read_blf.short_settings(log))
     return PASS, short(out), out
 
 
@@ -107,7 +110,8 @@ def step_strain_plot(log, ue, stem):
                       index=pd.Index(log.t, name="t_s"))
     os.makedirs(plot_strain.PLOT_DIR, exist_ok=True)
     out = os.path.join(plot_strain.PLOT_DIR, f"{stem}.png")
-    plot_strain.plot(df, f"Strain by gauge - {stem}", out, placeholder=not strain.CONSTANTS_VERIFIED)
+    plot_strain.plot(df, f"Strain by gauge - {stem}", out, placeholder=not strain.CONSTANTS_VERIFIED,
+                     settings=read_blf.short_settings(log))
     return PASS, short(out), out
 
 

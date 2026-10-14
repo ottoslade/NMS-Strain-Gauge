@@ -88,8 +88,30 @@ static void blf_write_header(void) {
 static void blf_update_container(void) { f_lseek_(container_fp); f_write_(&container, sizeof(container)); f_lseek_(fsize_); }
 static void blf_write_new_container(void) { container.baseHeader.objectSize = sizeof(BLF_Container); container_fp = fsize_; blf_update_container(); }
 
+/* blf_write_config() from Core/Src/blf.c, with the logger_config.h values passed in */
+static void blf_write_config(uint32_t period_ms, uint16_t avg_samples, uint8_t scan_us) {
+  BLF_CanMessage msg = {.baseHeader2 = {.signature = {'L', 'O', 'B', 'J'},
+                                        .headerSize = sizeof(BLF_BaseObjectHeader),
+                                        .headerVersion = 1,
+                                        .objectSize = sizeof(BLF_CanMessage),
+                                        .objectType = 0x1},
+                        .v1Header = {.flags = 1, .clientIndex = 0, .objectVersion = 1, .timestamp = 0},
+                        .channel = VEHICLE_CAN, .flags = 0, .dlc = 8, .id = 0x323 /* LOG_CONFIG_CAN_ID */};
+  const uint32_t period_us = period_ms * 1000u;
+  msg.data[0] = 1; /* LOG_CONFIG_VERSION */
+  msg.data[1] = scan_us;
+  memcpy(&msg.data[2], &avg_samples, sizeof(avg_samples));
+  memcpy(&msg.data[4], &period_us, sizeof(period_us));
+  f_write_(&msg, sizeof(msg));
+  header.fileSize += sizeof(msg);
+  header.countObjects += 1;
+  container.baseHeader.objectSize += sizeof(msg);
+  blf_update_header();
+  blf_update_container();
+}
+
 int main(int argc, char **argv) {
-  if (argc != 13) { fprintf(stderr, "usage: out src synced y2 mon day h m s ssr t0_ms n_samples\n"); return 2; }
+  if (argc != 16) { fprintf(stderr, "usage: out src synced y2 mon day h m s ssr t0_samples n_samples period_ms avg_samples(0 = no config record) scan_us\n"); return 2; }
   FILE *src = fopen(argv[2], "rb");
   is_rtc_synced = atoi(argv[3]);
   /* rtcTask: WeekDay is filled by the _Date decoder */
@@ -99,9 +121,12 @@ int main(int argc, char **argv) {
   HAL_RTC_SetDate_BIN(&date);
   RTC_TR_h = atoi(argv[7]); RTC_TR_m = atoi(argv[8]); RTC_TR_s = atoi(argv[9]); RTC_SSR = atoi(argv[10]);
   long t0 = atol(argv[11]), n = atol(argv[12]);
+  uint32_t period_ms = atol(argv[13]); uint16_t avg = atoi(argv[14]); uint8_t scan_us = atoi(argv[15]);
+  long data_start = 176 + (avg ? 48 : 0); /* gauge messages follow the config record, if any */
 
   SDFile = fopen(argv[1], "w+b");
   blf_write_header(); blf_write_new_container();
+  if (avg) blf_write_config(period_ms, avg, scan_us);
 
   /* measureGaugesTask */
   const BLF_BaseObjectHeader base_header_2 = {.signature = {'L', 'O', 'B', 'J'}, .headerSize = sizeof(BLF_BaseObjectHeader), .headerVersion = 1, .objectSize = 0x30, .objectType = 0x1};
@@ -116,7 +141,7 @@ int main(int argc, char **argv) {
   for (long it = 0; it < t0 + n; it++) {
     if (it >= t0) {
       for (int j = 0; j < 3; j++) {
-        fseek(src, 176 + 48 * k + 40, SEEK_SET); fread(m[j]->data, 1, 8, src); k++;
+        fseek(src, data_start + 48 * k + 40, SEEK_SET); fread(m[j]->data, 1, 8, src); k++;
         msg_buffer[filled++] = *m[j];
       }
       if (filled == STREAM_BUFFER_TRIGGER) { /* blf_log_task */
@@ -126,7 +151,7 @@ int main(int argc, char **argv) {
         filled = 0;
       }
     }
-    msg1.v1Header.timestamp += 100; msg2.v1Header.timestamp += 100; msg3.v1Header.timestamp += 100;
+    msg1.v1Header.timestamp += 100 * period_ms; msg2.v1Header.timestamp += 100 * period_ms; msg3.v1Header.timestamp += 100 * period_ms;
   }
   fclose(SDFile);
   printf("sizes: header %u container %u msg %u\n", (unsigned)sizeof(BLF_FileHeader), (unsigned)sizeof(BLF_Container), (unsigned)sizeof(BLF_CanMessage));

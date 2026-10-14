@@ -1,5 +1,6 @@
 """
-Convert logged gauge voltages to strain, one row per millisecond.
+Convert logged gauge voltages to strain, one row per logged sample (every 1 ms
+at the default logger rate).
 
     python strain.py strain_logs/2_voltage_csv/strain_gauge_log_2026-10-06_23-09-25.csv
     python strain.py strain_logs/2_voltage_csv/*.csv
@@ -151,7 +152,7 @@ def write_strain_csv(path, t, ue):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Convert gauge voltages to microstrain, ms by ms.")
+    p = argparse.ArgumentParser(description="Convert gauge voltages to microstrain, one row per logged sample.")
     p.add_argument("files", nargs="+", help="CSV files from read_blf.py, or .blf logs (wildcards are fine)")
     p.add_argument("-o", "--out-dir", default=STRAIN_DIR, help="output folder (default strain_logs/4_strain_csv/)")
     args = p.parse_args()

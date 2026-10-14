@@ -1,17 +1,17 @@
 # Strain Analysis
 
-Tools for analysing the voltage data recorded by the Nittany Motorsports **Strain Gauge Logger** (SGL). The logger samples six strain gauges every 1 ms and saves them to its SD card as `.blf` files. The scripts here read those files, turn them into CSVs and plain Python arrays, and generate realistic fake logs so the analysis can be developed without hardware.
+Tools for analysing the voltage data recorded by the Nittany Motorsports **Strain Gauge Logger** (SGL). The logger samples six strain gauges (every 1 ms by default; the rate and smoothing are configurable, see [Logger Settings](#logger-settings)) and saves them to its SD card as `.blf` files. The scripts here read those files, turn them into CSVs and plain Python arrays, and generate realistic fake logs so the analysis can be developed without hardware.
 
 ```
 strain_logs/1_raw_blf/         SD card logs (or fake_blf.py dummies)
         │  read_blf.py
         ▼
-strain_logs/2_voltage_csv/     volts per gauge, per ms
+strain_logs/2_voltage_csv/     volts per gauge, per sample
         │  plot_strain.py --volts
         ├──────────────────►  strain_logs/3_voltage_plots/  volts over time, one panel per gauge
         │  strain.py
         ▼
-strain_logs/4_strain_csv/      microstrain per gauge, per ms
+strain_logs/4_strain_csv/      microstrain per gauge, per sample
         │  plot_strain.py
         ▼
 strain_logs/5_strain_plots/    strain over time, one panel per gauge
@@ -32,6 +32,7 @@ check_blf.py  proves a .blf matches the firmware's format byte for byte
   - [check_blf.py](#check_blfpy)
   - [strain.py](#strainpy)
   - [plot_strain.py](#plot_strainpy)
+- [Logger Settings](#logger-settings)
 - [Using the Data in Python](#using-the-data-in-python)
 - [File Formats](#file-formats)
 - [Firmware Quirks](#firmware-quirks)
@@ -52,7 +53,7 @@ strain_analysis/
 ├── read_blf.py          Read .blf logs (SD card or disk), print a summary, save CSVs
 ├── fake_blf.py          Generate dummy .blf logs in the exact firmware format
 ├── check_blf.py         Byte-compare .blf files against the firmware's write code
-├── strain.py            Convert gauge voltages to microstrain, ms by ms (hardware constants at the top)
+├── strain.py            Convert gauge voltages to microstrain, per sample (hardware constants at the top)
 ├── plot_strain.py       Plot strain (or, with --volts, voltage) over time, one panel per gauge
 ├── pipeline.py          Whole pipeline on one .blf, with a PASS / WARN / FAIL summary
 ├── fw_check/            PC build of the firmware's BLF writer, used by check_blf.py
@@ -63,9 +64,9 @@ strain_analysis/
 │   └── ff.h             Stub, so blf.h compiles without FatFs
 └── strain_logs/         Data, one folder per pipeline stage (numbered so they list in order)
     ├── 1_raw_blf/       .blf logs copied off the SD card, or made by fake_blf.py
-    ├── 2_voltage_csv/   Volts per gauge per ms, decoded by read_blf.py
+    ├── 2_voltage_csv/   Volts per gauge per sample, decoded by read_blf.py
     ├── 3_voltage_plots/ Voltage plots from pipeline.py / plot_strain.py --volts
-    ├── 4_strain_csv/    Microstrain per gauge per ms, from strain.py
+    ├── 4_strain_csv/    Microstrain per gauge per sample, from strain.py
     └── 5_strain_plots/  Strain plots from pipeline.py / plot_strain.py
 ```
 
@@ -92,12 +93,12 @@ python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf --plot strain 
 ```
 
 ```
-== Summary: strain_gauge_log_2026-10-06_23-09-25.blf
-  PASS  read_blf      9984 samples, 9.984 s -> strain_logs\2_voltage_csv\strain_gauge_log_2026-10-06_23-09-25.csv
-  PASS  check_blf     1,437,872 bytes identical
-  PASS  voltage plot  strain_logs\3_voltage_plots\strain_gauge_log_2026-10-06_23-09-25.png
-  WARN  strain        placeholder hardware constants (strain_logs\4_strain_csv\strain_gauge_log_2026-10-06_23-09-25_strain.csv)
-  PASS  strain plot   strain_logs\5_strain_plots\strain_gauge_log_2026-10-06_23-09-25.png
+== Summary: strain_gauge_log_example.blf
+  PASS  read_blf      9984 samples, 9.984 s, 1000 Hz, 8-scan smoothing (0.48 ms) -> strain_logs\2_voltage_csv\strain_gauge_log_example.csv
+  PASS  check_blf     1,437,920 bytes identical
+  PASS  voltage plot  strain_logs\3_voltage_plots\strain_gauge_log_example.png
+  WARN  strain        placeholder hardware constants (strain_logs\4_strain_csv\strain_gauge_log_example_strain.csv)
+  PASS  strain plot   strain_logs\5_strain_plots\strain_gauge_log_example.png
   RESULT: OK with warnings
 ```
 
@@ -142,15 +143,19 @@ Example output:
 
 ```
 strain_gauge_log_2026-10-06_23-09-25.blf: 9984 samples, 9.984 s, started 2026-10-06 23:09:25
+    sampling 1000 Hz (1 ms); smoothing 8 ADC scan(s) = 0.48 ms
+    no gaps: every sample present
     gauge 1: min 1.3023 V  max 2.2040 V  mean 1.5938 V
     ...
     gauge 6: min 1.4538 V  max 1.9969 V  mean 1.7155 V
     saved ...\strain_logs\2_voltage_csv\strain_gauge_log_2026-10-06_23-09-25.csv
 ```
 
+The second line shows the logger's [settings](#logger-settings), read from the config record at the start of the log. Logs from firmware older than the config record show `inferred from timestamps` for the rate and `smoothing unknown`.
+
 Problems are listed under the summary, such as `file ends mid-message (power cut?)`, `incomplete samples dropped`, or `start year may read too high (firmware RTC bug)`. Empty logs are reported and get no CSV.
 
-**Gap detection:** every summary ends with either `no gaps: every 1 ms sample present`, or a `GAPS:` line giving the number and percentage of missing samples and the five largest gaps with their times. The firmware timestamps every 1 ms loop whether or not that sample reached the card, so a dropped sample leaves a jump in time:
+**Gap detection:** every summary ends with either `no gaps: every sample present`, or a `GAPS:` line giving the number and percentage of missing samples and the five largest gaps with their times. A gap is any step longer than 1.5 sample periods, using the log's own sample rate. The firmware timestamps every sampling loop whether or not that sample reached the card, so a dropped sample leaves a jump in time:
 
 ```
     GAPS: 11 samples missing (0.22%) in 2 gap(s)
@@ -170,11 +175,15 @@ Generates dummy logs with exactly the layout the firmware writes, so analysis co
 python fake_blf.py                                  # 10 s log, named with the current date and time
 python fake_blf.py -d 60 --csv truth.csv               # also save the noise-free signal
 python fake_blf.py --start 2026-10-06T14:30:00 --seed 3
+python fake_blf.py --period-ms 5 --avg 32                # like firmware built with those settings
 ```
 
 | Option | Default | Effect |
 |---|---|---|
-| `-d`, `--duration` | `10` | Seconds of data. Rounded down to whole 32 ms batches, as the firmware writes. |
+| `-d`, `--duration` | `10` | Seconds of data. Rounded down to whole 32-sample batches, as the firmware writes. |
+| `--period-ms` | `1` | Sample period in whole ms, like `LOG_SAMPLE_PERIOD_MS` in the firmware. |
+| `--avg` | `8` | ADC scans averaged per reading, like `ADC_AVG_SAMPLES` in the firmware. |
+| `--legacy` | off | Leave out the config record, like firmware from before the settings were configurable. |
 | `-o`, `--out` | `strain_logs/1_raw_blf/strain_gauge_log_<date>_<time>.blf` | Output path. If the name is taken, `_2`, `_3`, ... is added. |
 | `--start` | now | Start time written to the header (ISO format). |
 | `--no-rtc` | off | Write the header as if the logger never received the time from the TCU. |
@@ -183,11 +192,11 @@ python fake_blf.py --start 2026-10-06T14:30:00 --seed 3
 | `--seed` | `0` | Random seed. The same settings always produce the same file. |
 | `--csv` | none | Also save the noise-free signal, as ground truth for testing your filtering. |
 
-The simulated signal is a 1.65 V bridge output with a slow load swing, 35-45 Hz vibration and a bump every 4 s. In each pair (1-2, 3-4, 5-6) the two gauges move in opposite directions, like tension and compression. Voltages go through the same 8-sample, 12-bit averaging as the firmware's `get_adc_voltage()`, so they have the real ADC step size (about 0.8 mV).
+The simulated signal is a 1.65 V bridge output with a slow load swing, 35-45 Hz vibration and a bump every 4 s. In each pair (1-2, 3-4, 5-6) the two gauges move in opposite directions, like tension and compression. The ADC is simulated scan by scan, like the firmware's `get_adc_voltage()`. Each logged value is the integer average of `--avg` 12-bit readings taken 60 µs apart, ending at the sample time. So the values have the real ADC step size (about 0.8 mV) and real smoothing behaviour, including its lag (see [Logger Settings](#logger-settings)).
 
 ### check_blf.py
 
-Checks that `.blf` files are byte-for-byte what the logger firmware would write. For each file it reads the start time, first timestamp and sample count, runs the firmware's own write code (`fw_check/fw_writer.c`, compiled for the PC) with those inputs, and compares the result. The gauge values are copied from the file, so every other byte is checked.
+Checks that `.blf` files are byte-for-byte what the logger firmware would write. For each file it reads the start time, first timestamp, sample count and logger settings, runs the firmware's own write code (`fw_check/fw_writer.c`, compiled for the PC) with those inputs, and compares the result. The gauge values are copied from the file, so every other byte is checked.
 
 ```bash
 python check_blf.py strain_logs/1_raw_blf/*.blf
@@ -199,7 +208,7 @@ MATCH   strain_gauge_log_2026-10-06_23-09-25.blf: 1,437,872 bytes identical
 DIFFER  strain_gauge_log_2026-10-06_22-18-37.blf: 3 byte(s) differ in: header weekday, header year (file year 2026, firmware writes 26)
 ```
 
-The first run compiles `fw_check/fw_writer.exe` with gcc. Use `--rebuild` after changing `fw_writer.c` or `blf.h`. The exit code is `0` only if every file matches.
+The first run compiles `fw_check/fw_writer.exe` with gcc, and it recompiles automatically whenever the files in `fw_check/` change. `--rebuild` forces a recompile. The exit code is `0` only if every file matches.
 
 `fw_check/blf.h` is a copy of `shared/blf/blf.h` from the nms-electronics repo. When run inside that repo, `check_blf.py` warns if the original has changed; copy it over again and use `--rebuild`.
 
@@ -207,7 +216,7 @@ Use `check_blf.py` to confirm that the dummy logs are still realistic after chan
 
 ### strain.py
 
-Converts the logged voltages to strain at each gauge, one row per millisecond. It takes the CSVs from `read_blf.py`, or `.blf` logs directly, and writes `strain_logs/4_strain_csv/<name>_strain.csv`.
+Converts the logged voltages to strain at each gauge, one row per logged sample. It takes the CSVs from `read_blf.py`, or `.blf` logs directly, and writes `strain_logs/4_strain_csv/<name>_strain.csv`.
 
 ```bash
 python strain.py strain_logs/2_voltage_csv/*.csv
@@ -270,6 +279,27 @@ For strain plots it also accepts volts CSVs or `.blf` logs, converting them with
 
 **Gaps:** where samples are missing, the line breaks instead of drawing a straight ramp across the missing data. The subtitle shows how many gaps there are and how many samples are missing. This uses the same rule as `read_blf.py`'s gap report (a step of more than 1.5 ms), so the two always agree. `pipeline.py` behaves the same way.
 
+## Logger Settings
+
+The logger's sample rate and smoothing are set in the firmware, in `Core/Inc/logger_config.h` (in the `strain-gauge-logger` folder next to this one). Change them, rebuild and reflash. They can also be overridden from the build without editing the file, for example `-DLOG_SAMPLE_PERIOD_MS=5`.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `LOG_SAMPLE_PERIOD_MS` | `1` | Time between logged samples, in whole ms: 1 = 1 kHz, 5 = 200 Hz, 10 = 100 Hz. 1 ms is the fastest, because the sampling task runs on the 1 ms FreeRTOS tick. |
+| `ADC_AVG_SAMPLES` | `8` | Smoothing: how many back-to-back ADC scans are averaged into each logged value (1 to 1024; 1 = none). One scan of all six gauges takes 60 µs, so 8 scans smooth over 0.48 ms. |
+
+**Nothing to change on the PC.** Every log starts with a config record holding these values (see [File Formats](#1-raw-blf-strain_logs1_raw_blf)). `read_blf.py`, `pipeline.py` and the plots show the settings, and gap detection uses the log's own sample period. Logs from firmware older than the config record still work: the rate is inferred from the timestamps and the smoothing is shown as unknown. To make dummy logs that match a non-default build, use `fake_blf.py --period-ms ... --avg ...`.
+
+**Smoothing trade-off.** More averaging lowers noise but also blurs fast events. And because the board averages the scans *leading up to* each sample, the logged value lags the real signal by about half the window. With the default dummy signal (35-45 Hz vibration), the error against the true signal is:
+
+| `ADC_AVG_SAMPLES` | Window | Error (std) |
+|---|---|---|
+| 1 | 0.06 ms | 4.0 mV (all ADC noise) |
+| 8 | 0.48 ms | 1.7 mV |
+| 64 | 3.84 ms | 7.7 mV (lag and blurring dominate) |
+
+Keep the window well below the period of the fastest vibration you care about. Usually that also means shorter than the sample period.
+
 ## Using the Data in Python
 
 ```python
@@ -293,9 +323,11 @@ gauge3 = v[:, 2]           # column 0 = gauge 1 ... column 5 = gauge 6
 | `log.truncated` | The file ends part-way through a message (for example after a power cut) |
 | `log.incomplete` | Number of samples dropped because one of their three messages was missing |
 | `log.header_count` | Message count recorded in the file header |
-| `log.gaps` | List of `(t_before, t_after, samples_missing)`, one for each break in the 1 ms sequence |
+| `log.gaps` | List of `(t_before, t_after, samples_missing)`, one for each break in the sample sequence |
 | `log.missing` | Total samples missing across all gaps |
-| `log.irregular` | Number of steps between samples that aren't a whole number of milliseconds (should be 0) |
+| `log.sample_rate_hz`, `log.sample_period_s` | Logger sample rate / period, from the config record (or inferred from timestamps for old logs) |
+| `log.adc_avg`, `log.smoothing_window_s` | ADC scans averaged per reading and the time they span; `None` if the log has no config record |
+| `log.irregular` | Number of steps between samples that aren't a whole number of sample periods (should be 0) |
 | `log.write_csv(path)` | Save as CSV |
 
 `read_log()` only reads; it never saves a CSV automatically. The command line does.
@@ -314,10 +346,10 @@ One folder per pipeline stage. Each log keeps the same base name through every s
 
 | Folder | File | Made by | Contents |
 |---|---|---|---|
-| `strain_logs/1_raw_blf/` | `<name>.blf` | SD card / `fake_blf.py` | Raw log: three CAN messages per 1 ms sample |
-| `strain_logs/2_voltage_csv/` | `<name>.csv` | `read_blf.py` | Volts per gauge, one row per ms |
+| `strain_logs/1_raw_blf/` | `<name>.blf` | SD card / `fake_blf.py` | Raw log: a config record, then three CAN messages per sample |
+| `strain_logs/2_voltage_csv/` | `<name>.csv` | `read_blf.py` | Volts per gauge, one row per sample |
 | `strain_logs/3_voltage_plots/` | `<name>.png`, `<name>_<start>-<end>s.png` | `pipeline.py`, `plot_strain.py --volts` | Volts over time, one panel per gauge |
-| `strain_logs/4_strain_csv/` | `<name>_strain.csv` | `strain.py` | Microstrain per gauge, one row per ms |
+| `strain_logs/4_strain_csv/` | `<name>_strain.csv` | `strain.py` | Microstrain per gauge, one row per sample |
 | `strain_logs/5_strain_plots/` | `<name>.png`, `<name>_<start>-<end>s.png` | `pipeline.py`, `plot_strain.py` | Strain over time, one panel per gauge |
 
 Logs read straight off the SD card get the start time added to their name (`sd_<date>_<time>_strain_gauge_log_000`) so sessions never overwrite each other. See [read_blf.py](#read_blfpy).
@@ -330,9 +362,21 @@ These are Vector BLF files, also readable by CANalyzer, CANoe and python-can. Al
 |---|---|---|
 | 0 | 144 B | File header `LOGG`: object count, start time (`SYSTEMTIME` at offset 40) |
 | 144 | 32 B | Container `LOBJ`, type `0x0A`, uncompressed |
-| 176 | 48 B each | CAN message objects `LOBJ`, type `0x01` |
+| 176 | 48 B | Config record: CAN message object, ID `0x323` (left out by firmware older than the config record) |
+| 224 | 48 B each | Gauge data: CAN message objects `LOBJ`, type `0x01` |
 
-Each 1 ms sample is three CAN messages, each carrying two `float32` voltages:
+The config record's 8 data bytes (little-endian) are defined in `Core/Inc/logger_config.h`:
+
+| Bytes | Contents |
+|---|---|
+| 0 | Config version (1) |
+| 1 | ADC scan time in µs (60) |
+| 2-3 | `ADC_AVG_SAMPLES` (uint16) |
+| 4-7 | Sample period in µs (uint32) |
+
+`0x323` is only written to the SD card, never sent on the CAN bus. It isn't in the vehicle DBC yet; add it there if other tools should decode it by name.
+
+Each sample is three CAN messages, each carrying two `float32` voltages:
 
 | CAN ID | Bytes 0-3 | Bytes 4-7 |
 |---|---|---|
@@ -340,7 +384,7 @@ Each 1 ms sample is three CAN messages, each carrying two `float32` voltages:
 | `0x321` | Gauge 3 | Gauge 4 |
 | `0x322` | Gauge 5 | Gauge 6 |
 
-Message timestamps are in 10 µs units and go up by 100 (1 ms) per sample. The structs are defined in `fw_check/blf.h`.
+Message timestamps are in 10 µs units and go up by 100 × `LOG_SAMPLE_PERIOD_MS` per sample (100 at the default 1 ms). The structs are defined in `fw_check/blf.h`.
 
 ### 2. Voltage CSV (`strain_logs/2_voltage_csv/`)
 
@@ -350,7 +394,7 @@ t_s,gauge1_v,gauge2_v,gauge3_v,gauge4_v,gauge5_v,gauge6_v
 0.00100,1.581099,1.598828,1.849451,1.446520,1.925201,1.494066
 ```
 
-- One row per sample (1,000 per second). Missing samples have no row; see the gap report from `read_blf.py`.
+- One row per sample (1,000 per second at the default 1 ms rate). Missing samples have no row; see the gap report from `read_blf.py`.
 - `t_s` is seconds from the start of the log. Voltages are in volts, from 0 to 3.3, given to 6 decimal places.
 - There's no wall-clock time; use `log.start` or the file name.
 
@@ -390,7 +434,8 @@ The logger firmware writes some fields differently from a standard BLF file. `fa
 
 ## Known Limitations
 
-- **The current firmware probably can't record a full log.** `measureGaugesTask` treats `init_logging()`'s `FR_OK` (0) as failure, so after a successful setup it calls it again. That starts a second `blf_log_task`, which trips a `configASSERT` in `xStreamBufferReceive` and hangs the board. Expect one or two empty 176-byte files until this is fixed in `Core/Src/main.c`.
+- **The firmware changes haven't run on hardware yet.** The `init_logging()` and card re-insertion fixes, and the configurable sample rate and smoothing, have only been type-checked against the real headers on a PC. Build, flash and do a bench test (log, pull the card, re-insert, log again) before relying on them.
+- **Sampling is paced by the 1 ms FreeRTOS tick.** Rates above 1 kHz, or periods that aren't whole milliseconds, would need a hardware timer.
 - **`check_blf.py` runs the firmware code on a PC, not on the board.** It proves the fake files match what the firmware code writes. A file from a real SD card is the final check.
 - **The TCU's time format is assumed.** The TCU code in this repo doesn't send `TCU_RTC_MSG` yet. These tools assume it will send a 2-digit year, month 1-12 and day 1-31.
 - **The fake signals are invented.** They have realistic ADC behaviour but are not based on measured loads.

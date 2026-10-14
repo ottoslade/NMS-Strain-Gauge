@@ -49,7 +49,6 @@ enum SDCardPosition
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
 
-#define ADC1_SAMPLES_PER_CHANNEL 8 //Must be power of 2
 
 /* USER CODE END EM */
 

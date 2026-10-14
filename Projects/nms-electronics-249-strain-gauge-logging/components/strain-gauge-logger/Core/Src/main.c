@@ -41,6 +41,7 @@
 #include "timers.h"
 
 #include "blf.h"
+#include "logger_config.h"
 #include "util.h"
 
 #include <string.h>
@@ -126,7 +127,7 @@ void measureGaugesTask(void *argument)
                                               .objectSize = 0x30,
                                               .objectType = 0x1};
 
-  BLF_V1ObjectHeader v1_header = {.flags = 1, // sets timestamp to be offsets of 100us
+  BLF_V1ObjectHeader v1_header = {.flags = 1, // timestamps are in units of 10 us
                                   .clientIndex = 0,
                                   .objectVersion = 1,
                                   .timestamp = 0};
@@ -220,12 +221,12 @@ void measureGaugesTask(void *argument)
       packCanTx(CAN_ID_SGL_STRAIN_GAUGES_5_6, VEHICLE_CAN);
     }
 
-    // update time offsets (in 10us)
-    msg1.v1Header.timestamp += 100;
-    msg2.v1Header.timestamp += 100;
-    msg3.v1Header.timestamp += 100;
+    // update time offsets (in 10us): one sample period per loop
+    msg1.v1Header.timestamp += 100 * LOG_SAMPLE_PERIOD_MS;
+    msg2.v1Header.timestamp += 100 * LOG_SAMPLE_PERIOD_MS;
+    msg3.v1Header.timestamp += 100 * LOG_SAMPLE_PERIOD_MS;
 
-    vTaskDelayUntil(&last_tick, pdMS_TO_TICKS(1));
+    vTaskDelayUntil(&last_tick, pdMS_TO_TICKS(LOG_SAMPLE_PERIOD_MS));
   }
 }
 
