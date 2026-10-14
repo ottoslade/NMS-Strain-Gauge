@@ -1,6 +1,6 @@
 # Strain Analysis
 
-Tools for analysing the voltage data recorded by the Nittany Motorsports **Strain Gauge Logger** (SGL). The logger samples six strain gauges (every 1 ms by default; the rate and smoothing are configurable, see [Logger Settings](#logger-settings)) and saves them to its SD card as `.blf` files. The scripts here read those files, turn them into CSVs and plain Python arrays, and generate realistic fake logs so the analysis can be developed without hardware.
+Tools for analysing the voltage data recorded by the Nittany Motorsports **Strain Gauge Logger** (SGL). The logger samples six strain gauges (every 1 ms by default; the rate and smoothing are configurable, see [Logger Settings](#logger-settings)) and saves them to its SD card as `.blf` files. The scripts here read those files, turn them into CSVs and plain Python arrays, and generate realistic fake logs so the analysis can be developed without hardware. With a GPS track, they also show where on the track each strain reading was taken.
 
 ```
 strain_logs/1_raw_blf/         SD card logs (or fake_blf.py dummies)
@@ -15,6 +15,12 @@ strain_logs/4_strain_csv/      microstrain per gauge, per sample
         │  plot_strain.py
         ▼
 strain_logs/5_strain_plots/    strain over time, one panel per gauge
+
+strain_logs/1_raw_gps/         GPS track CSVs (or fake_gps.py dummies)
+        │  gps.py  (+ the strain above)
+        ▼
+strain_logs/6_strain_gps_csv/  strain + position (lat/lon, distance along track) per sample
+strain_logs/7_strain_maps/     track map per gauge, coloured by strain
 
 pipeline.py   runs every step above on one log, with a PASS / WARN / FAIL summary
               (--plot voltage stops at the voltage plot; --plot strain skips it)
@@ -32,6 +38,8 @@ check_blf.py  proves a .blf matches the firmware's format byte for byte
   - [check_blf.py](#check_blfpy)
   - [strain.py](#strainpy)
   - [plot_strain.py](#plot_strainpy)
+  - [fake_gps.py](#fake_gpspy)
+  - [gps.py](#gpspy)
 - [Logger Settings](#logger-settings)
 - [Using the Data in Python](#using-the-data-in-python)
 - [File Formats](#file-formats)
@@ -42,7 +50,7 @@ check_blf.py  proves a .blf matches the firmware's format byte for byte
 
 - **Python 3.8+.** `read_blf.py` and `fake_blf.py` only need the standard library.
 - **numpy** (optional) for `StrainLog.as_array()`: `pip install numpy`
-- **pandas** and **matplotlib** for `plot_strain.py`: `pip install pandas matplotlib`
+- **pandas** and **matplotlib** for `plot_strain.py`, and **numpy** as well for `gps.py`: `pip install numpy pandas matplotlib`
 - **gcc** (only for `check_blf.py`) on your `PATH`, for example [TDM-GCC](https://jmeubank.github.io/tdm-gcc/) or MSYS2 on Windows.
 - SD card auto-detection works on **Windows** only. On other systems, pass the card's mount path.
 
@@ -55,7 +63,9 @@ strain_analysis/
 ├── check_blf.py         Byte-compare .blf files against the firmware's write code
 ├── strain.py            Convert gauge voltages to microstrain, per sample (hardware constants at the top)
 ├── plot_strain.py       Plot strain (or, with --volts, voltage) over time, one panel per gauge
-├── pipeline.py          Whole pipeline on one .blf, with a PASS / WARN / FAIL summary
+├── fake_gps.py          Generate a dummy GPS track CSV with irregular fix timing
+├── gps.py               Combine a strain log with a GPS track; track maps per gauge
+├── pipeline.py          Whole pipeline on one .blf (+ GPS if present), with a PASS / WARN / FAIL summary
 ├── fw_check/            PC build of the firmware's BLF writer, used by check_blf.py
 │   ├── fw_writer.c      Write path copied from Core/Src/main.c, Core/Src/blf.c and the HAL RTC driver
 │   ├── blf.h            Copy of shared/blf/blf.h (the BLF structs)
@@ -64,10 +74,13 @@ strain_analysis/
 │   └── ff.h             Stub, so blf.h compiles without FatFs
 └── strain_logs/         Data, one folder per pipeline stage (numbered so they list in order)
     ├── 1_raw_blf/       .blf logs copied off the SD card, or made by fake_blf.py
+    ├── 1_raw_gps/       GPS track CSVs; <log name>.csv is used automatically for that log
     ├── 2_voltage_csv/   Volts per gauge per sample, decoded by read_blf.py
     ├── 3_voltage_plots/ Voltage plots from pipeline.py / plot_strain.py --volts
     ├── 4_strain_csv/    Microstrain per gauge per sample, from strain.py
-    └── 5_strain_plots/  Strain plots from pipeline.py / plot_strain.py
+    ├── 5_strain_plots/  Strain plots from pipeline.py / plot_strain.py
+    ├── 6_strain_gps_csv/ Strain (or volts) plus GPS position per sample, from gps.py / pipeline.py
+    └── 7_strain_maps/   Track maps coloured by strain, from gps.py / pipeline.py
 ```
 
 The contents of `strain_logs/` are not committed to git (see `.gitignore`); only the empty folders are. To commit a specific log anyway, use `git add -f strain_logs/1_raw_blf/<file>`.
@@ -90,7 +103,10 @@ This finds the card, copies its logs into `strain_logs/1_raw_blf/`, prints a sum
 python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf                  # voltage and strain
 python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf --plot voltage   # voltage only
 python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf --plot strain    # strain only
+python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf --gps track.csv  # add GPS track maps
 ```
+
+If `strain_logs/1_raw_gps/<log name>.csv` exists, the pipeline adds a `gps map` step automatically (`--no-gps` skips it). See [gps.py](#gpspy).
 
 ```
 == Summary: strain_gauge_log_example.blf
@@ -278,6 +294,61 @@ python plot_strain.py strain_logs/2_voltage_csv/*.csv --volts                   
 For strain plots it also accepts volts CSVs or `.blf` logs, converting them with `strain.py` first. While `strain.py` still has placeholder constants, every strain plot carries a note saying the magnitudes are illustrative. Voltage plots have no such note and no zero line, since 0 V isn't a meaningful baseline.
 
 **Gaps:** where samples are missing, the line breaks instead of drawing a straight ramp across the missing data. The subtitle shows how many gaps there are and how many samples are missing. This uses the same rule as `read_blf.py`'s gap report (a step of more than 1.5 ms), so the two always agree. `pipeline.py` behaves the same way.
+
+### fake_gps.py
+
+Generates a dummy GPS track: a car lapping a closed circuit (about 600 m, Formula SAE autocross scale), saved as a CSV with one row per fix. The spacing between fixes is deliberately irregular, because a real receiver's time step is unknown: about `--rate` Hz on average, with random jitter and occasional dropouts. Positions carry about 1.5 m of GPS-like noise. Speed follows a lateral-grip limit, so the car slows for tight corners.
+
+```bash
+python fake_gps.py --match-log strain_logs/1_raw_blf/<log>.blf   # same time span as a log -> 1_raw_gps/<log>.csv
+python fake_gps.py -d 120 --start 2026-10-13T14:00:00            # free-standing track
+python fake_gps.py --match-log <log>.blf --clock-offset 2.5      # GPS clock 2.5 s ahead (to test --gps-offset)
+```
+
+| Option | Default | Effect |
+|---|---|---|
+| `--match-log` | none | Cover the same time span as a `.blf` log, starting at its RTC time. Saved as `strain_logs/1_raw_gps/<log name>.csv`, which `pipeline.py` then uses automatically. |
+| `-d`, `--duration`, `--start` | 60 s, now | Time span when not matching a log. |
+| `--clock-offset` | `0` | Seconds the GPS clock runs ahead of the logger, to test clock correction. |
+| `--relative-time` | off | Write `t_s` (seconds from the log start) instead of clock times. |
+| `--rate`, `--jitter`, `--dropouts` | 10 Hz, 0.3, 0.5 per minute | Average fix rate, spread of the fix interval, and how often the signal drops for 0.5-2.5 s. |
+| `--noise-m` | `1.5` | Position noise, metres. |
+| `--lap-m`, `--vmax`, `--a-lat` | 600 m, 22 m/s, 12 m/s² | Track length, top speed, cornering grip. |
+| `--center` | near State College, PA | Track centre as `lat,lon`. |
+| `--seed` | `0` | Random seed. |
+
+The dummy strain signal from `fake_blf.py` is based on time, not position, so dummy maps show no consistent pattern around the track. Real data, where corners and bumps load the chassis, shows hotspots at the same places every lap.
+
+### gps.py
+
+Combines a strain log with a GPS track: it works out where on the track every strain sample was taken. Saves `strain_logs/6_strain_gps_csv/<name>_strain_gps.csv` and a track map per gauge in `strain_logs/7_strain_maps/<name>.png`. `pipeline.py` runs the same step automatically when there's GPS data.
+
+```bash
+python gps.py strain_logs/1_raw_blf/<log>.blf                          # uses strain_logs/1_raw_gps/<log>.csv
+python gps.py strain_logs/1_raw_blf/<log>.blf track.csv --offset -2.5  # GPS clock 2.5 s ahead of the logger
+python gps.py strain_logs/1_raw_blf/<log>.blf --volts                  # map raw voltage instead of strain
+```
+
+**GPS CSV format.** One row per fix, in any order, with any spacing. Column names are matched loosely:
+
+| Column | Accepted names | Contents |
+|---|---|---|
+| time | `time_utc`, `time`, `timestamp`, `datetime` | Clock time, ISO 8601 (`2026-10-13T21:52:08.093`; a `Z` or time zone is converted to UTC) |
+| | or `t_s`, `t`, `seconds` | Seconds from the start of the strain log |
+| latitude | `latitude`, `lat` | Degrees |
+| longitude | `longitude`, `lon`, `lng`, `long` | Degrees |
+| speed (optional) | `speed_mps`, `speed` | m/s; used for distance along the track |
+
+**Lining up the clocks.** The GPS and the logger have separate clocks. In order:
+1. **Seconds from the log start:** used as they are.
+2. **Clock times, and the log has an RTC start time:** matched by clock. If the firmware's RTC bug may have raised the log's year, earlier years are tried and the one that overlaps the GPS is used. The summary then says `log year corrected 2027 -> 2026`.
+3. **Otherwise** (no RTC time, or the clocks don't overlap): the first GPS fix is assumed to be at the log start. This is reported, and `pipeline.py` gives a WARN.
+
+`--offset` (`--gps-offset` in `pipeline.py`) adds a correction in seconds to the GPS times, for a known clock difference or a time zone. Positive means the GPS times are moved later.
+
+**Positions between fixes.** GPS is about 10 Hz and irregular, while strain is up to 1 kHz. So each strain sample's position is linearly interpolated between the fixes either side of it, but never across a dropout. Samples inside a gap longer than 3× the typical fix interval (at least 0.5 s), or outside the GPS track, get no position. The summary and map show what percentage of samples have one. Distance along the track comes from integrating speed over time if the file has a speed column, otherwise from positions smoothed over about 1 s. Summing raw fix-to-fix distances would overstate it by around 50%, because position noise adds zig-zag to every step.
+
+**Track maps.** Six panels, one per gauge, all on the same colour scale. The grey line is the GPS path, and points are coloured by strain: blue for compression, red for tension, grey near zero. Straight grey chords with no coloured points are GPS dropouts. With `--volts` (or `pipeline.py --plot voltage`) the maps show volts on a light-to-dark blue scale instead.
 
 ## Logger Settings
 
