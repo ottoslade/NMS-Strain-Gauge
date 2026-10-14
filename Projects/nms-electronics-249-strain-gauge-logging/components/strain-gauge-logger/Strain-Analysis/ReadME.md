@@ -43,6 +43,7 @@ Strain-Analysis/
 ├── strain.py            Convert gauge voltages to microstrain, ms by ms (hardware constants at the top)
 ├── plot_strain.py       Plot strain over time, one panel per gauge (pandas + matplotlib)
 ├── blf_plot.py          One step: .blf in, strain diagram out (and opened)
+├── pipeline.py          Whole pipeline on one .blf, with a PASS / WARN / FAIL summary
 ├── fw_check/            PC build of the firmware's BLF writer, used by check_blf.py
 │   ├── fw_writer.c      Write path copied from Core/Src/main.c, Core/Src/blf.c and the HAL RTC driver
 │   ├── blf.h            Copy of shared/blf/blf.h (the BLF structs)
@@ -69,6 +70,23 @@ python read_blf.py --copy --all
 ```
 
 This finds the card, copies its logs into `Strain-Logs/raw-sd-data/`, prints a summary of each, and saves a CSV for each into `Strain-Logs/CSV/`. Nothing on the card is changed.
+
+**Test the whole pipeline on a log:** one argument, from any folder. This runs `read_blf` (with the gap check), `check_blf`, `strain` and the plot in order. It saves every output, opens the plot, and ends with a PASS / WARN / FAIL line for each step. The exit code is 1 if any step fails.
+
+```bash
+python pipeline.py Strain-Logs/raw-sd-data/strain_gauge_log_000.blf
+```
+
+```
+== Summary: strain_gauge_log_2026-10-06_23-09-25.blf
+  PASS  read_blf   9984 samples, 9.984 s -> Strain-Logs\CSV\strain_gauge_log_2026-10-06_23-09-25.csv
+  PASS  check_blf  1,437,872 bytes identical
+  WARN  strain     placeholder hardware constants (Strain-Logs\Strain\strain_gauge_log_2026-10-06_23-09-25_strain.csv)
+  PASS  plot       Strain-Logs\Plots\strain_gauge_log_2026-10-06_23-09-25.png
+  RESULT: OK with warnings
+```
+
+Gaps, a cut-off file or clipped readings give WARN. An empty log, or a file that differs from the firmware for any other reason, gives FAIL. `check_blf` shows SKIP if gcc isn't installed.
 
 **Fastest way to see a log:** one argument, from any folder. This saves the strain diagram to `Strain-Logs/Plots/` and opens it.
 
