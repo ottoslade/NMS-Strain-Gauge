@@ -42,6 +42,7 @@ Strain-Analysis/
 ├── check_blf.py         Byte-compare .blf files against the firmware's write code
 ├── strain.py            Convert gauge voltages to microstrain, ms by ms (hardware constants at the top)
 ├── plot_strain.py       Plot strain over time, one panel per gauge (pandas + matplotlib)
+├── blf_plot.py          One step: .blf in, strain diagram out (and opened)
 ├── fw_check/            PC build of the firmware's BLF writer, used by check_blf.py
 │   ├── fw_writer.c      Write path copied from Core/Src/main.c, Core/Src/blf.c and the HAL RTC driver
 │   ├── blf.h            Copy of shared/blf/blf.h (the BLF structs)
@@ -68,6 +69,12 @@ python read_blf.py --copy --all
 ```
 
 This finds the card, copies its logs into `Strain-Logs/raw-sd-data/`, prints a summary of each, and saves a CSV for each into `Strain-Logs/CSV/`. Nothing on the card is changed.
+
+**Fastest way to see a log:** one argument, from any folder. This saves the strain diagram to `Strain-Logs/Plots/` and opens it.
+
+```bash
+python blf_plot.py Strain-Logs/raw-sd-data/strain_gauge_log_000.blf
+```
 
 **Without hardware:** make a dummy log, then read it.
 
