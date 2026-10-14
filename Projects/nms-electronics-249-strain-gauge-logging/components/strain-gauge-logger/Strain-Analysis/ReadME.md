@@ -19,6 +19,7 @@ check_blf.py               (proves a .blf matches the firmware's format byte for
   - [fake_blf.py](#fake_blfpy)
   - [check_blf.py](#check_blfpy)
   - [strain.py](#strainpy)
+  - [plot_strain.py](#plot_strainpy)
 - [Using the Data in Python](#using-the-data-in-python)
 - [File Formats](#file-formats)
 - [Firmware Quirks](#firmware-quirks)
@@ -28,6 +29,7 @@ check_blf.py               (proves a .blf matches the firmware's format byte for
 
 - **Python 3.8+.** `read_blf.py` and `fake_blf.py` only need the standard library.
 - **numpy** (optional) for `StrainLog.as_array()`: `pip install numpy`
+- **pandas** and **matplotlib** for `plot_strain.py`: `pip install pandas matplotlib`
 - **gcc** (only for `check_blf.py`) on your `PATH`, for example [TDM-GCC](https://jmeubank.github.io/tdm-gcc/) or MSYS2 on Windows.
 - SD card auto-detection works on **Windows** only. On other systems, pass the card's mount path.
 
@@ -39,6 +41,7 @@ Strain-Analysis/
 ├── fake_blf.py          Generate dummy .blf logs in the exact firmware format
 ├── check_blf.py         Byte-compare .blf files against the firmware's write code
 ├── strain.py            Convert gauge voltages to microstrain, ms by ms (hardware constants at the top)
+├── plot_strain.py       Plot strain over time, one panel per gauge (pandas + matplotlib)
 ├── fw_check/            PC build of the firmware's BLF writer, used by check_blf.py
 │   ├── fw_writer.c      Write path copied from Core/Src/main.c, Core/Src/blf.c and the HAL RTC driver
 │   ├── blf.h            Copy of shared/blf/blf.h (the BLF structs)
@@ -48,7 +51,8 @@ Strain-Analysis/
 └── Strain-Logs/
     ├── raw-sd-data/     .blf logs copied off the SD card, or made by fake_blf.py
     ├── CSV/             CSVs decoded by read_blf.py (volts)
-    └── Strain/          CSVs from strain.py (microstrain)
+    ├── Strain/          CSVs from strain.py (microstrain)
+    └── Plots/           PNGs from plot_strain.py
 ```
 
 The contents of `Strain-Logs/` are not committed to git (see `.gitignore`); only the empty folders are. To commit a specific log anyway, use `git add -f Strain-Logs/raw-sd-data/<file>`.
@@ -197,6 +201,24 @@ from strain import strain_from_csv
 t, ue = strain_from_csv("Strain-Logs/CSV/strain_gauge_log_2026-10-06_23-09-25.csv")
 ue[2][100]   # gauge 3 at t[100], in microstrain
 ```
+
+### plot_strain.py
+
+Plots strain over time for each gauge and saves a PNG to `Strain-Logs/Plots/`. There is one panel per gauge, laid out in pairs (1-2, 3-4, 5-6), and all panels share the same time and strain axes, so heights compare directly.
+
+```bash
+python plot_strain.py Strain-Logs/Strain/*_strain.csv                  # every strain CSV
+python plot_strain.py Strain-Logs/Strain/x_strain.csv --start 0.9 --end 1.5   # zoom in on a time window
+python plot_strain.py Strain-Logs/Strain/x_strain.csv --show           # also open an interactive window
+```
+
+| Option | Effect |
+|---|---|
+| `--start`, `--end` | Plot only this time window, in seconds. Zoomed plots are saved as `<name>_<start>-<end>s.png`. |
+| `--show` | Also open the plot in a window, where you can pan and zoom. |
+| `-o DIR` | Save somewhere other than `Strain-Logs/Plots/`. |
+
+It also accepts volts CSVs or `.blf` logs and converts them with `strain.py` first. While `strain.py` still has placeholder constants, every plot carries a note saying the magnitudes are illustrative.
 
 ## Using the Data in Python
 
