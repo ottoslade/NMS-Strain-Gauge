@@ -4,10 +4,10 @@ Run the whole analysis pipeline on one .blf log and report each step.
     python pipeline.py path/to/strain_gauge_log_000.blf
 
 Steps (same as running the scripts one after another):
-  1. read_blf   decode, check for gaps, save Strain-Logs/CSV/<name>.csv (volts)
+  1. read_blf   decode, check for gaps, save strain_logs/2_voltage_csv/<name>.csv (volts)
   2. check_blf  byte-compare the file with the firmware's write code
-  3. strain     convert to microstrain, save Strain-Logs/Strain/<name>_strain.csv
-  4. plot       save Strain-Logs/Plots/<name>.png and open it
+  3. strain     convert to microstrain, save strain_logs/3_strain_csv/<name>_strain.csv
+  4. plot       save strain_logs/4_strain_plots/<name>.png and open it
 
 Ends with a PASS / WARN / FAIL line per step. Exit code is 1 if any step
 FAILs, 0 otherwise. Works from any folder.
@@ -30,7 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def short(p):
-    """Output paths shown relative to Strain-Analysis/, wherever this is run from."""
+    """Output paths shown relative to strain_analysis/, wherever this is run from."""
     return os.path.relpath(p, HERE)
 
 

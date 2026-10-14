@@ -6,22 +6,22 @@ is needed; numpy is used by StrainLog.as_array() if it is installed.
     python read_blf.py                      # find the SD card, summarise the newest log
     python read_blf.py E:                   # same, for a specific drive
     python read_blf.py E: --all             # summarise every log on the card
-    python read_blf.py E: --copy            # copy the card's logs into Strain-Logs/raw-sd-data/
-    python read_blf.py Strain-Logs/raw-sd-data --all   # every log already copied (or fake)
-    python read_blf.py Strain-Logs/raw-sd-data/x.blf --csv x.csv   # CSV somewhere else
-    python read_blf.py Strain-Logs/raw-sd-data --all --no-csv      # summaries only
+    python read_blf.py E: --copy            # copy the card's logs into strain_logs/1_raw_blf/
+    python read_blf.py strain_logs/1_raw_blf --all   # every log already copied (or fake)
+    python read_blf.py strain_logs/1_raw_blf/x.blf --csv x.csv   # CSV somewhere else
+    python read_blf.py strain_logs/1_raw_blf --all --no-csv      # summaries only
 
 Folders:
-    Strain-Logs/raw-sd-data/   .blf logs (copied off the card, or from fake_blf.py)
-    Strain-Logs/CSV/           decoded CSVs (t_s, gauge1_v .. gauge6_v)
+    strain_logs/1_raw_blf/   .blf logs (copied off the card, or from fake_blf.py)
+    strain_logs/2_voltage_csv/           decoded CSVs (t_s, gauge1_v .. gauge6_v)
 
 Every log read from the command line is also saved as a CSV in
-Strain-Logs/CSV/, unless --no-csv is given.
+strain_logs/2_voltage_csv/, unless --no-csv is given.
 
 From your own code:
 
     from read_blf import read_log
-    log = read_log("Strain-Logs/raw-sd-data/strain_gauge_log_000.blf")
+    log = read_log("strain_logs/1_raw_blf/strain_gauge_log_000.blf")
     log.t            # list of sample times in seconds from the start of the file
     log.gauges[0]    # gauge 1 voltages (gauges[0] .. gauges[5])
     t, v = log.as_array()   # numpy: t shape (N,), v shape (N, 6)
@@ -45,9 +45,9 @@ import sys
 CAN_IDS = (0x320, 0x321, 0x322)  # gauges 1-2, 3-4, 5-6
 NORTC = datetime.datetime(2026, 3, 1)  # header date when the RTC was never synced
 LOG_GLOB = "strain_gauge_log_*.blf"
-LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Strain-Logs")
-RAW_DIR = os.path.join(LOG_DIR, "raw-sd-data")  # .blf files (copied off the card, or fake)
-CSV_DIR = os.path.join(LOG_DIR, "CSV")          # decoded CSVs
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "strain_logs")
+RAW_DIR = os.path.join(LOG_DIR, "1_raw_blf")  # .blf files (copied off the card, or fake)
+CSV_DIR = os.path.join(LOG_DIR, "2_voltage_csv")  # decoded CSVs (volts)
 
 FILE_HEADER = struct.Struct("<4sI8BQQII8H8H72x")  # 144 B
 BASE_HEADER = struct.Struct("<4sHHII")            # 16 B
@@ -245,7 +245,7 @@ def session_stem(path, log=None):
 
 
 def default_csv_path(path, log=None):
-    """Strain-Logs/CSV/<log name>.csv for a given .blf."""
+    """strain_logs/2_voltage_csv/<log name>.csv for a given .blf."""
     return os.path.join(CSV_DIR, session_stem(path, log) + ".csv")
 
 
@@ -312,8 +312,8 @@ def main():
     p.add_argument("source", nargs="?",
                    help="a .blf file, a folder, or a drive like E: (default: find the SD card)")
     p.add_argument("--all", action="store_true", help="summarise every log in the folder, not just the newest")
-    p.add_argument("--copy", action="store_true", help="copy the logs into Strain-Logs/raw-sd-data/")
-    p.add_argument("--csv", help="write the CSV here instead of Strain-Logs/CSV/ (single file only)")
+    p.add_argument("--copy", action="store_true", help="copy the logs into strain_logs/1_raw_blf/")
+    p.add_argument("--csv", help="write the CSV here instead of strain_logs/2_voltage_csv/ (single file only)")
     p.add_argument("--no-csv", action="store_true", help="don't save CSVs")
     args = p.parse_args()
 

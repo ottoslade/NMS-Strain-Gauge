@@ -3,10 +3,19 @@
 Tools for analysing the voltage data recorded by the Nittany Motorsports **Strain Gauge Logger** (SGL). The logger samples six strain gauges every 1 ms and saves them to its SD card as `.blf` files. The scripts here read those files, turn them into CSVs and plain Python arrays, and generate realistic fake logs so the analysis can be developed without hardware.
 
 ```
-SD card (.blf)  ──►  read_blf.py  ──►  Strain-Logs/CSV/*.csv  ──►  strain.py  ──►  Strain-Logs/Strain/*_strain.csv
-                       ▲               (volts, per ms)                           (microstrain, per ms)
-fake_blf.py  ──────────┘   (dummy logs, same format as the card)
-check_blf.py               (proves a .blf matches the firmware's format byte for byte)
+strain_logs/1_raw_blf/      SD card logs (or fake_blf.py dummies)
+        │  read_blf.py
+        ▼
+strain_logs/2_voltage_csv/  volts per gauge, per ms
+        │  strain.py
+        ▼
+strain_logs/3_strain_csv/   microstrain per gauge, per ms
+        │  plot_strain.py
+        ▼
+strain_logs/4_strain_plots/ strain over time, one panel per gauge
+
+pipeline.py   runs every step above on one log, with a PASS / WARN / FAIL summary
+check_blf.py  proves a .blf matches the firmware's format byte for byte
 ```
 
 ## Table of Contents
@@ -36,13 +45,12 @@ check_blf.py               (proves a .blf matches the firmware's format byte for
 ## Folder Structure
 
 ```
-Strain-Analysis/
+strain_analysis/
 ├── read_blf.py          Read .blf logs (SD card or disk), print a summary, save CSVs
 ├── fake_blf.py          Generate dummy .blf logs in the exact firmware format
 ├── check_blf.py         Byte-compare .blf files against the firmware's write code
 ├── strain.py            Convert gauge voltages to microstrain, ms by ms (hardware constants at the top)
 ├── plot_strain.py       Plot strain over time, one panel per gauge (pandas + matplotlib)
-├── blf_plot.py          One step: .blf in, strain diagram out (and opened)
 ├── pipeline.py          Whole pipeline on one .blf, with a PASS / WARN / FAIL summary
 ├── fw_check/            PC build of the firmware's BLF writer, used by check_blf.py
 │   ├── fw_writer.c      Write path copied from Core/Src/main.c, Core/Src/blf.c and the HAL RTC driver
@@ -50,18 +58,18 @@ Strain-Analysis/
 │   ├── rtc_bits.h       RTC register bit definitions from the STM32F446 CMSIS header
 │   ├── nortc.h          No-RTC fallback date from FATFS/Target/ffconf.h
 │   └── ff.h             Stub, so blf.h compiles without FatFs
-└── Strain-Logs/
-    ├── raw-sd-data/     .blf logs copied off the SD card, or made by fake_blf.py
-    ├── CSV/             CSVs decoded by read_blf.py (volts)
-    ├── Strain/          CSVs from strain.py (microstrain)
-    └── Plots/           PNGs from plot_strain.py
+└── strain_logs/         Data, one folder per pipeline stage (numbered so they list in order)
+    ├── 1_raw_blf/       .blf logs copied off the SD card, or made by fake_blf.py
+    ├── 2_voltage_csv/   Volts per gauge per ms, decoded by read_blf.py
+    ├── 3_strain_csv/    Microstrain per gauge per ms, from strain.py
+    └── 4_strain_plots/  PNGs from plot_strain.py / pipeline.py
 ```
 
-The contents of `Strain-Logs/` are not committed to git (see `.gitignore`); only the empty folders are. To commit a specific log anyway, use `git add -f Strain-Logs/raw-sd-data/<file>`.
+The contents of `strain_logs/` are not committed to git (see `.gitignore`); only the empty folders are. To commit a specific log anyway, use `git add -f strain_logs/1_raw_blf/<file>`.
 
 ## Quick Start
 
-Run these from the `Strain-Analysis` folder.
+Run these from the `strain_analysis` folder.
 
 **With an SD card:** power off the logger, take the card out, and put it in your PC.
 
@@ -69,30 +77,24 @@ Run these from the `Strain-Analysis` folder.
 python read_blf.py --copy --all
 ```
 
-This finds the card, copies its logs into `Strain-Logs/raw-sd-data/`, prints a summary of each, and saves a CSV for each into `Strain-Logs/CSV/`. Nothing on the card is changed.
+This finds the card, copies its logs into `strain_logs/1_raw_blf/`, prints a summary of each, and saves a CSV for each into `strain_logs/2_voltage_csv/`. Nothing on the card is changed.
 
 **Test the whole pipeline on a log:** one argument, from any folder. This runs `read_blf` (with the gap check), `check_blf`, `strain` and the plot in order. It saves every output, opens the plot, and ends with a PASS / WARN / FAIL line for each step. The exit code is 1 if any step fails.
 
 ```bash
-python pipeline.py Strain-Logs/raw-sd-data/strain_gauge_log_000.blf
+python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf
 ```
 
 ```
 == Summary: strain_gauge_log_2026-10-06_23-09-25.blf
-  PASS  read_blf   9984 samples, 9.984 s -> Strain-Logs\CSV\strain_gauge_log_2026-10-06_23-09-25.csv
+  PASS  read_blf   9984 samples, 9.984 s -> strain_logs\2_voltage_csv\strain_gauge_log_2026-10-06_23-09-25.csv
   PASS  check_blf  1,437,872 bytes identical
-  WARN  strain     placeholder hardware constants (Strain-Logs\Strain\strain_gauge_log_2026-10-06_23-09-25_strain.csv)
-  PASS  plot       Strain-Logs\Plots\strain_gauge_log_2026-10-06_23-09-25.png
+  WARN  strain     placeholder hardware constants (strain_logs\3_strain_csv\strain_gauge_log_2026-10-06_23-09-25_strain.csv)
+  PASS  plot       strain_logs\4_strain_plots\strain_gauge_log_2026-10-06_23-09-25.png
   RESULT: OK with warnings
 ```
 
 Gaps, a cut-off file or clipped readings give WARN. An empty log, or a file that differs from the firmware for any other reason, gives FAIL. `check_blf` shows SKIP if gcc isn't installed.
-
-**Fastest way to see a log:** one argument, from any folder. This saves the strain diagram to `Strain-Logs/Plots/` and opens it.
-
-```bash
-python blf_plot.py Strain-Logs/raw-sd-data/strain_gauge_log_000.blf
-```
 
 **Without hardware:** make a dummy log, then read it.
 
@@ -100,31 +102,31 @@ python blf_plot.py Strain-Logs/raw-sd-data/strain_gauge_log_000.blf
 python fake_blf.py
 ```
 ```bash
-python read_blf.py Strain-Logs/raw-sd-data
+python read_blf.py strain_logs/1_raw_blf
 ```
 
 ## Scripts
 
 ### read_blf.py
 
-Reads logs, prints a summary of each, and saves each as a CSV in `Strain-Logs/CSV/`.
+Reads logs, prints a summary of each, and saves each as a CSV in `strain_logs/2_voltage_csv/`.
 
 ```bash
 python read_blf.py                                  # find the SD card, read the newest log
 python read_blf.py E:                               # a specific drive
 python read_blf.py E: --all                         # every log on the card
-python read_blf.py E: --copy                        # also copy the card's logs into raw-sd-data/
-python read_blf.py Strain-Logs/raw-sd-data --all    # every log already on disk
+python read_blf.py E: --copy                        # also copy the card's logs into 1_raw_blf/
+python read_blf.py strain_logs/1_raw_blf --all    # every log already on disk
 python read_blf.py path/to/log.blf --csv out.csv    # save the CSV somewhere else
-python read_blf.py Strain-Logs/raw-sd-data --all --no-csv   # summaries only
+python read_blf.py strain_logs/1_raw_blf --all --no-csv   # summaries only
 ```
 
 | Option | Effect |
 |---|---|
 | `source` | A `.blf` file, a folder, or a drive such as `E:`. If left out, the SD card is found automatically. |
 | `--all` | Read every log in the folder, not just the newest. |
-| `--copy` | Copy the logs into `Strain-Logs/raw-sd-data/`. Files already copied are skipped. |
-| `--csv PATH` | Save the CSV here instead of `Strain-Logs/CSV/` (single file only). |
+| `--copy` | Copy the logs into `strain_logs/1_raw_blf/`. Files already copied are skipped. |
+| `--csv PATH` | Save the CSV here instead of `strain_logs/2_voltage_csv/` (single file only). |
 | `--no-csv` | Don't save CSVs. |
 
 Example output:
@@ -134,7 +136,7 @@ strain_gauge_log_2026-10-06_23-09-25.blf: 9984 samples, 9.984 s, started 2026-10
     gauge 1: min 1.3023 V  max 2.2040 V  mean 1.5938 V
     ...
     gauge 6: min 1.4538 V  max 1.9969 V  mean 1.7155 V
-    saved ...\Strain-Logs\CSV\strain_gauge_log_2026-10-06_23-09-25.csv
+    saved ...\strain_logs\2_voltage_csv\strain_gauge_log_2026-10-06_23-09-25.csv
 ```
 
 Problems are listed under the summary, such as `file ends mid-message (power cut?)`, `incomplete samples dropped`, or `start year may read too high (firmware RTC bug)`. Empty logs are reported and get no CSV.
@@ -157,14 +159,14 @@ Generates dummy logs with exactly the layout the firmware writes, so analysis co
 
 ```bash
 python fake_blf.py                                  # 10 s log, named with the current date and time
-python fake_blf.py -d 60 --csv Strain-Logs/CSV/truth.csv
+python fake_blf.py -d 60 --csv strain_logs/2_voltage_csv/truth.csv
 python fake_blf.py --start 2026-10-06T14:30:00 --seed 3
 ```
 
 | Option | Default | Effect |
 |---|---|---|
 | `-d`, `--duration` | `10` | Seconds of data. Rounded down to whole 32 ms batches, as the firmware writes. |
-| `-o`, `--out` | `Strain-Logs/raw-sd-data/strain_gauge_log_<date>_<time>.blf` | Output path. If the name is taken, `_2`, `_3`, ... is added. |
+| `-o`, `--out` | `strain_logs/1_raw_blf/strain_gauge_log_<date>_<time>.blf` | Output path. If the name is taken, `_2`, `_3`, ... is added. |
 | `--start` | now | Start time written to the header (ISO format). |
 | `--no-rtc` | off | Write the header as if the logger never received the time from the TCU. |
 | `--t0` | `0` | Time of the first sample in seconds. Real files opened after re-inserting the card don't start at 0. |
@@ -179,8 +181,8 @@ The simulated signal is a 1.65 V bridge output with a slow load swing, 35-45 Hz 
 Checks that `.blf` files are byte-for-byte what the logger firmware would write. For each file it reads the start time, first timestamp and sample count, runs the firmware's own write code (`fw_check/fw_writer.c`, compiled for the PC) with those inputs, and compares the result. The gauge values are copied from the file, so every other byte is checked.
 
 ```bash
-python check_blf.py Strain-Logs/raw-sd-data/*.blf
-python check_blf.py --rebuild Strain-Logs/raw-sd-data/some_log.blf
+python check_blf.py strain_logs/1_raw_blf/*.blf
+python check_blf.py --rebuild strain_logs/1_raw_blf/some_log.blf
 ```
 
 ```
@@ -196,11 +198,11 @@ Use `check_blf.py` to confirm that the dummy logs are still realistic after chan
 
 ### strain.py
 
-Converts the logged voltages to strain at each gauge, one row per millisecond. It takes the CSVs from `read_blf.py`, or `.blf` logs directly, and writes `Strain-Logs/Strain/<name>_strain.csv`.
+Converts the logged voltages to strain at each gauge, one row per millisecond. It takes the CSVs from `read_blf.py`, or `.blf` logs directly, and writes `strain_logs/3_strain_csv/<name>_strain.csv`.
 
 ```bash
-python strain.py Strain-Logs/CSV/*.csv
-python strain.py Strain-Logs/raw-sd-data/some_log.blf
+python strain.py strain_logs/2_voltage_csv/*.csv
+python strain.py strain_logs/1_raw_blf/some_log.blf
 ```
 
 ```
@@ -233,36 +235,36 @@ From Python:
 
 ```python
 from strain import strain_from_csv
-t, ue = strain_from_csv("Strain-Logs/CSV/strain_gauge_log_2026-10-06_23-09-25.csv")
+t, ue = strain_from_csv("strain_logs/2_voltage_csv/strain_gauge_log_2026-10-06_23-09-25.csv")
 ue[2][100]   # gauge 3 at t[100], in microstrain
 ```
 
 ### plot_strain.py
 
-Plots strain over time for each gauge and saves a PNG to `Strain-Logs/Plots/`. There is one panel per gauge, laid out in pairs (1-2, 3-4, 5-6), and all panels share the same time and strain axes, so heights compare directly.
+Plots strain over time for each gauge and saves a PNG to `strain_logs/4_strain_plots/`. There is one panel per gauge, laid out in pairs (1-2, 3-4, 5-6), and all panels share the same time and strain axes, so heights compare directly.
 
 ```bash
-python plot_strain.py Strain-Logs/Strain/*_strain.csv                  # every strain CSV
-python plot_strain.py Strain-Logs/Strain/x_strain.csv --start 0.9 --end 1.5   # zoom in on a time window
-python plot_strain.py Strain-Logs/Strain/x_strain.csv --show           # also open an interactive window
+python plot_strain.py strain_logs/3_strain_csv/*_strain.csv                  # every strain CSV
+python plot_strain.py strain_logs/3_strain_csv/x_strain.csv --start 0.9 --end 1.5   # zoom in on a time window
+python plot_strain.py strain_logs/3_strain_csv/x_strain.csv --show           # also open an interactive window
 ```
 
 | Option | Effect |
 |---|---|
 | `--start`, `--end` | Plot only this time window, in seconds. Zoomed plots are saved as `<name>_<start>-<end>s.png`. |
 | `--show` | Also open the plot in a window, where you can pan and zoom. |
-| `-o DIR` | Save somewhere other than `Strain-Logs/Plots/`. |
+| `-o DIR` | Save somewhere other than `strain_logs/4_strain_plots/`. |
 
 It also accepts volts CSVs or `.blf` logs and converts them with `strain.py` first. While `strain.py` still has placeholder constants, every plot carries a note saying the magnitudes are illustrative.
 
-**Gaps:** where samples are missing, the line breaks instead of drawing a straight ramp across the missing data. The subtitle shows how many gaps there are and how many samples are missing. This uses the same rule as `read_blf.py`'s gap report (a step of more than 1.5 ms), so the two always agree. `blf_plot.py` behaves the same way.
+**Gaps:** where samples are missing, the line breaks instead of drawing a straight ramp across the missing data. The subtitle shows how many gaps there are and how many samples are missing. This uses the same rule as `read_blf.py`'s gap report (a step of more than 1.5 ms), so the two always agree. `pipeline.py` behaves the same way.
 
 ## Using the Data in Python
 
 ```python
 from read_blf import read_log
 
-log = read_log("Strain-Logs/raw-sd-data/strain_gauge_log_2026-10-06_23-09-25.blf")
+log = read_log("strain_logs/1_raw_blf/strain_gauge_log_2026-10-06_23-09-25.blf")
 
 t, v = log.as_array()      # numpy: t shape (N,), v shape (N, 6)
 gauge3 = v[:, 2]           # column 0 = gauge 1 ... column 5 = gauge 6
@@ -291,13 +293,13 @@ To load a saved CSV instead:
 
 ```python
 import numpy as np
-data = np.loadtxt("Strain-Logs/CSV/strain_gauge_log_2026-10-06_23-09-25.csv", delimiter=",", skiprows=1)
+data = np.loadtxt("strain_logs/2_voltage_csv/strain_gauge_log_2026-10-06_23-09-25.csv", delimiter=",", skiprows=1)
 t, v = data[:, 0], data[:, 1:]
 ```
 
 ## File Formats
 
-### CSV (`Strain-Logs/CSV/`)
+### CSV (`strain_logs/2_voltage_csv/`)
 
 ```
 t_s,gauge1_v,gauge2_v,gauge3_v,gauge4_v,gauge5_v,gauge6_v
@@ -311,7 +313,7 @@ t_s,gauge1_v,gauge2_v,gauge3_v,gauge4_v,gauge5_v,gauge6_v
 
 The values are **gauge output voltages, not strain**. Converting to strain (bridge configuration, gain, gauge factor, zero offset) is part of the analysis.
 
-### BLF (`Strain-Logs/raw-sd-data/`)
+### BLF (`strain_logs/1_raw_blf/`)
 
 These are Vector BLF files, also readable by CANalyzer, CANoe and python-can. All fields are little-endian and packed.
 

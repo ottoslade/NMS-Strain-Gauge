@@ -1,11 +1,11 @@
 """
 Convert logged gauge voltages to strain, one row per millisecond.
 
-    python strain.py Strain-Logs/CSV/strain_gauge_log_2026-10-06_23-09-25.csv
-    python strain.py Strain-Logs/CSV/*.csv
-    python strain.py Strain-Logs/raw-sd-data/some_log.blf     # .blf works too
+    python strain.py strain_logs/2_voltage_csv/strain_gauge_log_2026-10-06_23-09-25.csv
+    python strain.py strain_logs/2_voltage_csv/*.csv
+    python strain.py strain_logs/1_raw_blf/some_log.blf     # .blf works too
 
-Output goes to Strain-Logs/Strain/<name>_strain.csv:
+Output goes to strain_logs/3_strain_csv/<name>_strain.csv:
 
     t_s,gauge1_ue,gauge2_ue,gauge3_ue,gauge4_ue,gauge5_ue,gauge6_ue
     0.00000,12.3,-8.1,...
@@ -19,7 +19,7 @@ from the board schematic and gauge datasheet, then set CONSTANTS_VERIFIED.
 From your own code:
 
     from strain import strain_from_csv
-    t, ue = strain_from_csv("Strain-Logs/CSV/x.csv")   # ue[g][i] = gauge g+1 at t[i]
+    t, ue = strain_from_csv("strain_logs/2_voltage_csv/x.csv")   # ue[g][i] = gauge g+1 at t[i]
 """
 
 import argparse
@@ -80,7 +80,7 @@ ADC_MAX_V = 3.29        # (ADC range is 0 - 3.3 V)
 # =============================================================================
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-STRAIN_DIR = os.path.join(HERE, "Strain-Logs", "Strain")
+STRAIN_DIR = os.path.join(HERE, "strain_logs", "3_strain_csv")
 
 
 def bridge_strain(vr, g):
@@ -151,7 +151,7 @@ def write_strain_csv(path, t, ue):
 def main():
     p = argparse.ArgumentParser(description="Convert gauge voltages to microstrain, ms by ms.")
     p.add_argument("files", nargs="+", help="CSV files from read_blf.py, or .blf logs (wildcards are fine)")
-    p.add_argument("-o", "--out-dir", default=STRAIN_DIR, help="output folder (default Strain-Logs/Strain/)")
+    p.add_argument("-o", "--out-dir", default=STRAIN_DIR, help="output folder (default strain_logs/3_strain_csv/)")
     args = p.parse_args()
 
     if len(GAUGES) != 6:

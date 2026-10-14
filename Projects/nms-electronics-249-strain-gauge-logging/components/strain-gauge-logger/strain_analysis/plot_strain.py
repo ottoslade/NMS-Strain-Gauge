@@ -1,15 +1,15 @@
 """
 Plot strain over time for each gauge, one panel per gauge.
 
-    python plot_strain.py Strain-Logs/Strain/strain_gauge_log_2026-10-06_23-09-25_strain.csv
-    python plot_strain.py Strain-Logs/Strain/*_strain.csv
-    python plot_strain.py Strain-Logs/Strain/x_strain.csv --show       # also open a window
-    python plot_strain.py Strain-Logs/Strain/x_strain.csv --start 2 --end 4   # zoom to 2-4 s
+    python plot_strain.py strain_logs/3_strain_csv/strain_gauge_log_2026-10-06_23-09-25_strain.csv
+    python plot_strain.py strain_logs/3_strain_csv/*_strain.csv
+    python plot_strain.py strain_logs/3_strain_csv/x_strain.csv --show       # also open a window
+    python plot_strain.py strain_logs/3_strain_csv/x_strain.csv --start 2 --end 4   # zoom to 2-4 s
 
 Input is a strain CSV from strain.py. A volts CSV from read_blf.py or a .blf
 log also works; it is converted with strain.py's constants first.
 
-Saves Strain-Logs/Plots/<name>.png. Needs pandas and matplotlib:
+Saves strain_logs/4_strain_plots/<name>.png. Needs pandas and matplotlib:
 
     pip install pandas matplotlib
 """
@@ -23,7 +23,7 @@ import matplotlib
 import pandas as pd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PLOT_DIR = os.path.join(HERE, "Strain-Logs", "Plots")
+PLOT_DIR = os.path.join(HERE, "strain_logs", "4_strain_plots")
 
 # Colours: one series per panel, so every panel uses the same line colour and
 # the panel title names the gauge. Text stays in neutral ink.
@@ -109,7 +109,7 @@ def plot(df, title, out_path, show=False, placeholder=False):
 def main():
     p = argparse.ArgumentParser(description="Plot strain over time for each gauge.")
     p.add_argument("files", nargs="+", help="strain CSVs from strain.py (or volts CSVs / .blf logs)")
-    p.add_argument("-o", "--out-dir", default=PLOT_DIR, help="output folder (default Strain-Logs/Plots/)")
+    p.add_argument("-o", "--out-dir", default=PLOT_DIR, help="output folder (default strain_logs/4_strain_plots/)")
     p.add_argument("--start", type=float, help="start time in seconds")
     p.add_argument("--end", type=float, help="end time in seconds")
     p.add_argument("--show", action="store_true", help="also open the plot in a window")
