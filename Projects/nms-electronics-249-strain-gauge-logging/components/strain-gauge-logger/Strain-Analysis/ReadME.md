@@ -114,6 +114,16 @@ strain_gauge_log_2026-10-06_23-09-25.blf: 9984 samples, 9.984 s, started 2026-10
 
 Problems are listed under the summary, such as `file ends mid-message (power cut?)`, `incomplete samples dropped`, or `start year may read too high (firmware RTC bug)`. Empty logs are reported and get no CSV.
 
+**Gap detection:** every summary ends with either `no gaps: every 1 ms sample present`, or a `GAPS:` line giving the number and percentage of missing samples and the five largest gaps with their times. The firmware timestamps every 1 ms loop whether or not that sample reached the card, so a dropped sample leaves a jump in time:
+
+```
+    GAPS: 11 samples missing (0.22%) in 2 gap(s)
+            10 missing between 0.499 s and 0.510 s
+             1 missing between 1.999 s and 2.001 s
+```
+
+Samples dropped because one of their three messages was missing also count as gaps. A sample stamped late, without anything actually missing, is reported as an `irregular time step` instead. The CSV simply has no rows for missing samples; nothing is filled in.
+
 **File naming:** the firmware names files `strain_gauge_log_000.blf` to `999.blf` and starts from `000` on every card. When these are copied or converted, the start time from the file header is added, for example `sd_2026-10-06_09-00-00_strain_gauge_log_000.csv`, so files from different sessions never overwrite each other. Logs whose time was never synced get `sd_no-rtc_...`.
 
 ### fake_blf.py
@@ -243,6 +253,9 @@ gauge3 = v[:, 2]           # column 0 = gauge 1 ... column 5 = gauge 6
 | `log.truncated` | The file ends part-way through a message (for example after a power cut) |
 | `log.incomplete` | Number of samples dropped because one of their three messages was missing |
 | `log.header_count` | Message count recorded in the file header |
+| `log.gaps` | List of `(t_before, t_after, samples_missing)`, one for each break in the 1 ms sequence |
+| `log.missing` | Total samples missing across all gaps |
+| `log.irregular` | Number of steps between samples that aren't a whole number of milliseconds (should be 0) |
 | `log.write_csv(path)` | Save as CSV |
 
 `read_log()` only reads; it never saves a CSV automatically. The command line does.

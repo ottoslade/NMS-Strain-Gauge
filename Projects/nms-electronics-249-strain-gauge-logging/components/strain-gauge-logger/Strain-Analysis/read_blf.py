@@ -56,6 +56,7 @@ V1_HEADER = struct.Struct("<IHHQ")                # 16 B
 CAN_BODY = struct.Struct("<HBBI8s")               # 16 B
 OBJ_CAN_MESSAGE = 0x01
 OBJ_LOG_CONTAINER = 0x0A
+SAMPLE_US = 1000  # firmware samples every 1 ms
 
 
 class StrainLog:
@@ -72,6 +73,13 @@ class StrainLog:
         self.other_msgs = 0      # messages with unexpected CAN IDs (ignored)
         self.truncated = False   # file ended part-way through a message
         self.header_count = 0    # message count the header claims
+        self.gaps = []           # (t before, t after, samples missing) for each break in the 1 ms sequence
+        self.irregular = 0       # steps between samples that aren't a whole number of ms
+
+    @property
+    def missing(self):
+        """Total samples missing inside the log (sum over gaps)."""
+        return sum(n for _, _, n in self.gaps)
 
     def __len__(self):
         return len(self.t)
@@ -161,14 +169,30 @@ def read_log(path):
     if pos < len(data):
         log.truncated = True
 
+    kept = []
     for ticks in sorted(samples):
         row = samples[ticks]
         if None in row:
             log.incomplete += 1
             continue
+        kept.append(ticks)
         log.t.append(ticks / 1e6)
         for g in range(6):
             log.gauges[g].append(row[g])
+
+    # The firmware stamps every 1 ms loop, logged or not, so a dropped sample
+    # (SD card stalled, or an incomplete sample removed above) leaves a jump.
+    for prev, cur in zip(kept, kept[1:]):
+        step = cur - prev
+        if step == SAMPLE_US:
+            continue
+        if step % SAMPLE_US:
+            log.irregular += 1
+        # samples that fit in the step, rounding halves down so a late
+        # sample (e.g. a 1.5 ms step) isn't counted as a missing one
+        missing = (step + SAMPLE_US // 2 - 1) // SAMPLE_US - 1
+        if missing > 0:
+            log.gaps.append((prev / 1e6, cur / 1e6, missing))
     return log
 
 
@@ -266,8 +290,19 @@ def summarise(log):
         notes.append("file ends mid-message (power cut?)")
     if log.header_count != len(log) * 3:
         notes.append(f"header says {log.header_count} messages, found {len(log) * 3}")
+    if log.irregular:
+        notes.append(f"{log.irregular} irregular time steps (not a whole number of ms)")
     if notes:
         print("    " + "; ".join(notes))
+    if log.gaps:
+        pct = 100 * log.missing / (len(log) + log.missing)
+        print(f"    GAPS: {log.missing} samples missing ({pct:.2f}%) in {len(log.gaps)} gap(s)")
+        for before, after, n in sorted(log.gaps, key=lambda g: -g[2])[:5]:
+            print(f"        {n:6d} missing between {before:.3f} s and {after:.3f} s")
+        if len(log.gaps) > 5:
+            print(f"        ... and {len(log.gaps) - 5} smaller gap(s); see log.gaps")
+    else:
+        print("    no gaps: every 1 ms sample present")
     for g, v in enumerate(log.gauges, 1):
         print(f"    gauge {g}: min {min(v):.4f} V  max {max(v):.4f} V  mean {sum(v) / len(v):.4f} V")
 
