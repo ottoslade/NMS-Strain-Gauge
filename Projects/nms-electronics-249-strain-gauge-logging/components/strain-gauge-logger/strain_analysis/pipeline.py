@@ -61,6 +61,8 @@ def step_read(path):
         problems.append("file ends mid-message")
     if log.irregular:
         problems.append(f"{log.irregular} irregular time steps")
+    if log.period_mismatch:
+        problems.append("sample rate mismatch: " + read_blf.mismatch_message(log))
     detail = f"{len(log)} samples, {log.duration:.3f} s, {read_blf.short_settings(log)} -> {short(out)}"
     return (WARN, "; ".join(problems) + f" ({detail})", log) if problems else (PASS, detail, log)
 

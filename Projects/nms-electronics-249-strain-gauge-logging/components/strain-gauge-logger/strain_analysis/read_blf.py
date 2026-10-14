@@ -81,6 +81,9 @@ class StrainLog:
         self.adc_avg = None      # ADC scans averaged per reading (smoothing); None = unknown
         self.adc_scan_us = None  # time per ADC scan of all six gauges
         self.config_source = "default"  # "record", "timestamps" (inferred) or "default"
+        # (record period, timestamp period) in seconds if the config record and the
+        # timestamps disagree; sample_period_s then follows the timestamps
+        self.period_mismatch = None
 
     @property
     def sample_rate_hz(self):
@@ -201,12 +204,20 @@ def read_log(path):
         for g in range(6):
             log.gauges[g].append(row[g])
 
-    # Logs from before the config record existed: the sample period is the
-    # most common step between samples (gaps don't change the most common one).
+    # The period the timestamps show: the most common step between samples
+    # (gaps don't change the most common one).
     steps = [b - a for a, b in zip(kept, kept[1:])]
-    if log.config_source != "record" and steps:
-        log.sample_period_s = max(set(steps), key=steps.count) / 1e6
+    stamped_us = max(set(steps), key=steps.count) if steps else None
+    if log.config_source != "record" and stamped_us:
+        # Logs from before the config record existed
+        log.sample_period_s = stamped_us / 1e6
         log.config_source = "timestamps"
+    elif log.config_source == "record" and stamped_us and stamped_us != round(log.sample_period_s * 1e6):
+        # Cross-check: the record and the timestamps disagree. Trust the
+        # timestamps for gaps and duration (they are how the data is actually
+        # spaced) and keep both values so the mismatch can be reported.
+        log.period_mismatch = (log.sample_period_s, stamped_us / 1e6)
+        log.sample_period_s = stamped_us / 1e6
     period_us = round(log.sample_period_s * 1e6)
 
     # The firmware stamps every loop, logged or not, so a dropped sample
@@ -306,6 +317,10 @@ def describe_settings(log):
     rate = f"sampling {log.sample_rate_hz:g} Hz ({period_ms:g} ms)"
     if log.config_source == "timestamps":
         rate += ", inferred from timestamps"
+    elif log.period_mismatch:
+        rate += ", from timestamps (config record disagrees, see below)"
+    else:
+        rate += ", config record and timestamps agree"
     window = log.smoothing_window_s
     if window is None:
         smooth = "smoothing unknown (no config record; firmware before it was configurable used 8 scans = 0.48 ms)"
@@ -318,7 +333,18 @@ def short_settings(log):
     """Compact settings label for plot subtitles and summaries."""
     window = log.smoothing_window_s
     smooth = f"{log.adc_avg}-scan smoothing ({window * 1000:g} ms)" if window else "smoothing unknown"
-    return f"{log.sample_rate_hz:g} Hz, {smooth}"
+    mismatch = " (RATE MISMATCH: see read_blf)" if log.period_mismatch else ""
+    return f"{log.sample_rate_hz:g} Hz{mismatch}, {smooth}"
+
+
+def mismatch_message(log):
+    """Plain-language description of a record/timestamp disagreement, or None."""
+    if not log.period_mismatch:
+        return None
+    record_s, stamped_s = log.period_mismatch
+    return (f"config record says {record_s * 1000:g} ms ({1 / record_s:g} Hz) but timestamps step "
+            f"{stamped_s * 1000:g} ms ({1 / stamped_s:g} Hz); using the timestamps. "
+            f"Check LOG_SAMPLE_PERIOD_MS and the firmware's timestamp step")
 
 
 def summarise(log):
@@ -329,6 +355,8 @@ def summarise(log):
     when = f"{log.start:%Y-%m-%d %H:%M:%S}" if log.rtc_synced else "RTC not synced"
     print(f"{name}: {len(log)} samples, {log.duration:.3f} s, started {when}")
     print("    " + describe_settings(log))
+    if log.period_mismatch:
+        print("    RATE MISMATCH: " + mismatch_message(log))
     notes = []
     if log.year_may_be_wrong:
         notes.append("start year may read too high (firmware RTC bug)")

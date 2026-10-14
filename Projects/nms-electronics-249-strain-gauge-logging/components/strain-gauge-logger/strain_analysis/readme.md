@@ -143,7 +143,7 @@ Example output:
 
 ```
 strain_gauge_log_2026-10-06_23-09-25.blf: 9984 samples, 9.984 s, started 2026-10-06 23:09:25
-    sampling 1000 Hz (1 ms); smoothing 8 ADC scan(s) = 0.48 ms
+    sampling 1000 Hz (1 ms), config record and timestamps agree; smoothing 8 ADC scan(s) = 0.48 ms
     no gaps: every sample present
     gauge 1: min 1.3023 V  max 2.2040 V  mean 1.5938 V
     ...
@@ -288,7 +288,9 @@ The logger's sample rate and smoothing are set in the firmware, in `Core/Inc/log
 | `LOG_SAMPLE_PERIOD_MS` | `1` | Time between logged samples, in whole ms: 1 = 1 kHz, 5 = 200 Hz, 10 = 100 Hz. 1 ms is the fastest, because the sampling task runs on the 1 ms FreeRTOS tick. |
 | `ADC_AVG_SAMPLES` | `8` | Smoothing: how many back-to-back ADC scans are averaged into each logged value (1 to 1024; 1 = none). One scan of all six gauges takes 60 µs, so 8 scans smooth over 0.48 ms. |
 
-**Nothing to change on the PC.** Every log starts with a config record holding these values (see [File Formats](#1-raw-blf-strain_logs1_raw_blf)). `read_blf.py`, `pipeline.py` and the plots show the settings, and gap detection uses the log's own sample period. Logs from firmware older than the config record still work: the rate is inferred from the timestamps and the smoothing is shown as unknown. To make dummy logs that match a non-default build, use `fake_blf.py --period-ms ... --avg ...`.
+**Nothing to change on the PC.** Every log starts with a config record holding these values (see [File Formats](#1-raw-blf-strain_logs1_raw_blf)). `read_blf.py`, `pipeline.py` and the plots show the settings, and gap detection uses the log's own sample period. Logs from firmware older than the config record still work: the rate is inferred from the timestamps and the smoothing is shown as unknown.
+
+**Cross-check.** The rate is stated twice in every log: explicitly in the config record, and implicitly in the timestamp step between samples. `read_blf.py` compares them. If they agree, the summary says `config record and timestamps agree`. If they don't, it prints a `RATE MISMATCH` warning with both values, and `pipeline.py` gives a WARN. Gaps and duration then use the timestamps, since they show how the data is actually spaced; the record's value is kept in `log.period_mismatch`. A mismatch points to a firmware problem, so `check_blf.py` will also report the file as differing. To make dummy logs that match a non-default build, use `fake_blf.py --period-ms ... --avg ...`.
 
 **Smoothing trade-off.** More averaging lowers noise but also blurs fast events. And because the board averages the scans *leading up to* each sample, the logged value lags the real signal by about half the window. With the default dummy signal (35-45 Hz vibration), the error against the true signal is:
 
@@ -326,6 +328,7 @@ gauge3 = v[:, 2]           # column 0 = gauge 1 ... column 5 = gauge 6
 | `log.gaps` | List of `(t_before, t_after, samples_missing)`, one for each break in the sample sequence |
 | `log.missing` | Total samples missing across all gaps |
 | `log.sample_rate_hz`, `log.sample_period_s` | Logger sample rate / period, from the config record (or inferred from timestamps for old logs) |
+| `log.period_mismatch` | `None`, or `(record period, timestamp period)` in seconds if the two disagree |
 | `log.adc_avg`, `log.smoothing_window_s` | ADC scans averaged per reading and the time they span; `None` if the log has no config record |
 | `log.irregular` | Number of steps between samples that aren't a whole number of sample periods (should be 0) |
 | `log.write_csv(path)` | Save as CSV |
