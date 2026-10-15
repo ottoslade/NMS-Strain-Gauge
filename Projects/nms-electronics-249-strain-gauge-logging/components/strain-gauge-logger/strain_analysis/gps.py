@@ -226,12 +226,17 @@ def merge(log, gps, values, columns, offset=0.0, max_gap=None):
     for name, col in zip(columns, values):
         df[name] = col
     info = {"alignment": how, "clock_ok": clock_ok, "coverage": float(valid.mean()),
-            "max_gap": max_gap, "track_xy": (gx, gy), "origin": (lat0, lon0)}
+            "max_gap": max_gap, "track_xy": (gx, gy), "track_latlon": (gps.lat, gps.lon), "origin": (lat0, lon0)}
     return df.set_index("t_s"), info
 
 
-def plot_map(df, info, title, out_path, suffix="_ue", settings=None, show=False):
-    """Six track maps, one per gauge, points coloured by value at that spot."""
+def plot_map(df, info, title, out_path, suffix="_ue", settings=None):
+    """Six track maps, one per gauge, points coloured by value at that spot (PNG),
+    plus an interactive street/satellite map next to it (.html). Returns the HTML path."""
+    import web_plots
+    notes = [n for n in (settings, f"GPS: {info['alignment']}",
+                         f"{info['coverage'] * 100:.0f}% of samples have a position") if n]
+    html = web_plots.track_map(df, info, suffix, title, notes, os.path.splitext(out_path)[0] + ".html")
     import matplotlib.pyplot as plt
     from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm, Normalize
 
@@ -286,9 +291,8 @@ def plot_map(df, info, title, out_path, suffix="_ue", settings=None, show=False)
     cb.set_label(label, color=TEXT_2)
     cb.outline.set_visible(False)
     fig.savefig(out_path, dpi=150)
-    if show:
-        plt.show()
     plt.close(fig)
+    return html
 
 
 def find_gps_for(log_path, log=None):
@@ -307,10 +311,10 @@ def main():
                    help="seconds to add to GPS times (positive = GPS later); default 0")
     p.add_argument("--max-gap", type=float, help="longest GPS gap to interpolate across, seconds")
     p.add_argument("--volts", action="store_true", help="map raw voltage instead of strain")
-    p.add_argument("--show", action="store_true", help="also open the map in a window")
+    p.add_argument("--show", action="store_true",
+                   help="also open the interactive map in the browser")
     args = p.parse_args()
-    if not args.show:
-        matplotlib.use("Agg")
+    matplotlib.use("Agg")  # PNG drawn off-screen; the interactive map is HTML
 
     import strain
     log = read_blf.read_log(args.log)
@@ -339,9 +343,12 @@ def main():
     df.to_csv(csv_out, float_format="%.7g")
     map_out = os.path.join(MAP_DIR, f"{stem}{'_volts' if args.volts else ''}.png")
     what = "Voltage" if args.volts else "Strain"
-    plot_map(df, info, f"{what} around the track - {stem}", map_out, suffix,
-             settings=read_blf.short_settings(log), show=args.show)
-    print(f"Saved {csv_out}\nSaved {map_out}")
+    html = plot_map(df, info, f"{what} around the track - {stem}", map_out, suffix,
+                    settings=read_blf.short_settings(log))
+    print(f"Saved {csv_out}\nSaved {map_out}\nSaved {html}")
+    if args.show:
+        import web_plots
+        web_plots.open_in_browser([html])
 
 
 if __name__ == "__main__":

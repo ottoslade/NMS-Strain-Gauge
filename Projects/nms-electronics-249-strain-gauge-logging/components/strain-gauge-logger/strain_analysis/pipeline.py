@@ -24,7 +24,11 @@ strain, or voltage with --plot voltage. See gps.py for the CSV format and how th
 GPS and logger clocks are lined up; --gps-offset corrects a known clock difference.
 
 --plot voltage skips the strain steps entirely, so it doesn't depend on the
-hardware constants in strain.py. The plots made are opened at the end.
+hardware constants in strain.py.
+
+Every plot is saved as a PNG and as an interactive HTML page (Plotly), and the
+HTML pages open in the browser at the end: hover for exact readings, scroll to
+zoom, drag to box-zoom, double-click to reset. --no-show saves without opening.
 
 Ends with a PASS / WARN / FAIL line per step. Exit code is 1 if any step
 FAILs, 0 otherwise. Works from any folder.
@@ -36,18 +40,20 @@ import sys
 
 import matplotlib
 
-matplotlib.use("Agg")
+matplotlib.use("Agg")  # PNGs drawn off-screen; interactive plots are HTML
 
 import pandas as pd
 
 import check_blf
 import gps
+import web_plots
 import plot_strain
 import read_blf
 import strain
 
 PASS, WARN, FAIL, SKIP = "PASS", "WARN", "FAIL", "SKIP"
 HERE = os.path.dirname(os.path.abspath(__file__))
+SHOW = True  # open the interactive HTML plots in the browser at the end (off with --no-show)
 
 
 def short(p):
@@ -94,8 +100,8 @@ def step_voltage_plot(log, stem):
                       index=pd.Index(log.t, name="t_s"))
     os.makedirs(plot_strain.VOLT_PLOT_DIR, exist_ok=True)
     out = os.path.join(plot_strain.VOLT_PLOT_DIR, f"{stem}.png")
-    plot_strain.plot_voltage(df, f"Voltage by gauge - {stem}", out, settings=read_blf.short_settings(log))
-    return PASS, short(out), out
+    html = plot_strain.plot_voltage(df, f"Voltage by gauge - {stem}", out, settings=read_blf.short_settings(log))
+    return PASS, f"{short(out)} (+ .html)", html
 
 
 def step_strain(log, stem):
@@ -121,9 +127,9 @@ def step_strain_plot(log, ue, stem):
                       index=pd.Index(log.t, name="t_s"))
     os.makedirs(plot_strain.PLOT_DIR, exist_ok=True)
     out = os.path.join(plot_strain.PLOT_DIR, f"{stem}.png")
-    plot_strain.plot(df, f"Strain by gauge - {stem}", out, placeholder=not strain.CONSTANTS_VERIFIED,
+    html = plot_strain.plot(df, f"Strain by gauge - {stem}", out, placeholder=not strain.CONSTANTS_VERIFIED,
                      settings=read_blf.short_settings(log))
-    return PASS, short(out), out
+    return PASS, f"{short(out)} (+ .html)", html
 
 
 def step_gps(log, stem, gps_path, offset, values, cols, suffix):
@@ -143,7 +149,7 @@ def step_gps(log, stem, gps_path, offset, values, cols, suffix):
     df.to_csv(csv_out, float_format="%.7g")
     png = os.path.join(gps.MAP_DIR, f"{stem}{'' if kind == 'strain' else '_volts'}.png")
     what = "Strain" if kind == "strain" else "Voltage"
-    gps.plot_map(df, info, f"{what} around the track - {stem}", png, suffix, settings=read_blf.short_settings(log))
+    html = gps.plot_map(df, info, f"{what} around the track - {stem}", png, suffix, settings=read_blf.short_settings(log))
 
     problems = []
     if not info["clock_ok"]:
@@ -151,9 +157,9 @@ def step_gps(log, stem, gps_path, offset, values, cols, suffix):
     if info["coverage"] < 0.9:
         problems.append(f"only {info['coverage'] * 100:.0f}% of samples have a position (GPS gaps or short track)")
     if info["coverage"] == 0:
-        return FAIL, "no strain samples fall within the GPS track", png
-    detail = f"{short(csv_out)}, {short(png)}"
-    return (WARN, "; ".join(problems) + f" ({detail})", png) if problems else (PASS, detail, png)
+        return FAIL, "no strain samples fall within the GPS track", html
+    detail = f"{short(csv_out)}, {short(png)} (+ .html)"
+    return (WARN, "; ".join(problems) + f" ({detail})", html) if problems else (PASS, detail, html)
 
 
 def main():
@@ -163,9 +169,13 @@ def main():
                    help="which plots to make (default both); 'voltage' skips the strain steps")
     p.add_argument("--gps", help="GPS track CSV (default: strain_logs/1_raw_gps/<log name>.csv if it exists)")
     p.add_argument("--no-gps", action="store_true", help="skip the GPS step even if a matching file exists")
+    p.add_argument("--no-show", action="store_true",
+                   help="only save the plots; don't open them in the browser")
     p.add_argument("--gps-offset", type=float, default=0.0,
                    help="seconds to add to GPS times (positive = GPS later); default 0")
     args = p.parse_args()
+    global SHOW
+    SHOW = not args.no_show
     path = args.log
     if not os.path.isfile(path):
         sys.exit(f"File not found: {path}")
@@ -224,12 +234,10 @@ def main():
     print("  RESULT:", "FAIL" if failed else
           "OK with warnings" if any(s == WARN for _, s, _ in results) else "ALL PASS")
 
-    if hasattr(os, "startfile"):
-        for png in pngs:
-            try:
-                os.startfile(png)
-            except OSError:
-                pass
+    if SHOW and pngs:
+        print(f"\nOpening {len(pngs)} interactive plot(s) in the browser: hover for readings, scroll to zoom, "
+              "drag to box-zoom, double-click to reset")
+        web_plots.open_in_browser(pngs)
     sys.exit(1 if failed else 0)
 
 

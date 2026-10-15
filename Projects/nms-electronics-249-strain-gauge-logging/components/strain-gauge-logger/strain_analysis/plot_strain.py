@@ -3,20 +3,21 @@ Plot strain (or raw voltage) over time for each gauge, one panel per gauge.
 
     python plot_strain.py strain_logs/4_strain_csv/strain_gauge_log_2026-10-06_23-09-25_strain.csv
     python plot_strain.py strain_logs/4_strain_csv/*_strain.csv
-    python plot_strain.py strain_logs/4_strain_csv/x_strain.csv --show       # also open a window
+    python plot_strain.py strain_logs/4_strain_csv/x_strain.csv --show       # also open it in the browser
     python plot_strain.py strain_logs/4_strain_csv/x_strain.csv --start 2 --end 4   # zoom to 2-4 s
     python plot_strain.py strain_logs/2_voltage_csv/x.csv --volts            # plot volts, no conversion
 
 Strain input is a strain CSV from strain.py; a volts CSV or a .blf log also
 works and is converted with strain.py's constants first. Saves
-strain_logs/5_strain_plots/<name>.png.
+strain_logs/5_strain_plots/<name>.png and an interactive <name>.html next to it
+(hover for readings, scroll to zoom; see web_plots.py).
 
 With --volts, input is a volts CSV from read_blf.py or a .blf log, plotted
-as-is (no hardware constants involved). Saves strain_logs/3_voltage_plots/<name>.png.
+as-is (no hardware constants involved). Saves strain_logs/3_voltage_plots/<name>.png and .html.
 
-Needs pandas and matplotlib:
+Needs pandas, matplotlib and plotly:
 
-    pip install pandas matplotlib
+    pip install pandas matplotlib plotly
 """
 
 import argparse
@@ -24,6 +25,8 @@ import glob
 import os
 
 import matplotlib
+
+matplotlib.use("Agg")  # PNGs are drawn off-screen; interactive plots are HTML
 
 import pandas as pd
 
@@ -92,22 +95,29 @@ def break_at_gaps(df, sample_s=None):
     return pd.concat([df, blanks]).sort_index(), int(at.sum()), missing
 
 
-def plot(df, title, out_path, show=False, placeholder=False, settings=None):
+def plot(df, title, out_path, placeholder=False, settings=None):
     """Strain plot: microstrain columns (gaugeN_ue), with a zero line.
-    settings: optional label for the logger settings, shown in the subtitle."""
+    settings: optional label for the logger settings, shown in the subtitle.
+    Saves out_path (PNG) and an interactive .html next to it; returns the HTML path."""
     notes = [settings] if settings else []
     if placeholder:
         notes.append("Placeholder hardware constants in strain.py: magnitudes are illustrative only")
-    _plot_panels(df, "_ue", "Strain (µε)", True, title, out_path, show, notes)
+    return _plot_panels(df, "_ue", "Strain (µε)", True, title, out_path, notes)
 
 
-def plot_voltage(df, title, out_path, show=False, settings=None):
-    """Voltage plot: raw gauge volts (gaugeN_v) as logged, no conversion."""
-    _plot_panels(df, "_v", "Voltage (V)", False, title, out_path, show, [settings] if settings else [])
+def plot_voltage(df, title, out_path, settings=None):
+    """Voltage plot: raw gauge volts (gaugeN_v) as logged, no conversion.
+    Saves out_path (PNG) and an interactive .html next to it; returns the HTML path."""
+    return _plot_panels(df, "_v", "Voltage (V)", False, title, out_path, [settings] if settings else [])
 
 
-def _plot_panels(df, suffix, ylabel, zero_line, title, out_path, show, notes):
-    """Six panels, one per gauge, shared axes, line broken at gaps."""
+def _plot_panels(df, suffix, ylabel, zero_line, title, out_path, notes):
+    """Six panels, one per gauge, shared axes, line broken at gaps.
+    Saves a static PNG (matplotlib) and an interactive HTML (Plotly)."""
+    import web_plots
+    html = web_plots.time_panels(df, suffix, ylabel, title, list(notes), os.path.splitext(out_path)[0] + ".html",
+                                 zero_line)
+
     import matplotlib.pyplot as plt
 
     df, n_gaps, n_missing = break_at_gaps(df)
@@ -142,9 +152,8 @@ def _plot_panels(df, suffix, ylabel, zero_line, title, out_path, show, notes):
     if notes:
         fig.text(0.01, 0.955, "    ·    ".join(notes), fontsize=9, color=TEXT_2, va="top")
     fig.savefig(out_path, dpi=150)
-    if show:
-        plt.show()
     plt.close(fig)
+    return html
 
 
 def main():
@@ -156,14 +165,14 @@ def main():
                    help="output folder (default strain_logs/5_strain_plots/, or 3_voltage_plots/ with --volts)")
     p.add_argument("--start", type=float, help="start time in seconds")
     p.add_argument("--end", type=float, help="end time in seconds")
-    p.add_argument("--show", action="store_true", help="also open the plot in a window")
+    p.add_argument("--show", action="store_true",
+                   help="also open the interactive plots in the browser")
     args = p.parse_args()
-    if not args.show:
-        matplotlib.use("Agg")  # save files without needing a display
 
     import strain
     out_dir = args.out_dir or (VOLT_PLOT_DIR if args.volts else PLOT_DIR)
     os.makedirs(out_dir, exist_ok=True)
+    pages = []
     for path in [f for pat in args.files for f in (glob.glob(pat) or [pat])]:
         try:
             df = load_volts(path) if args.volts else load_strain(path)[0]
@@ -182,10 +191,15 @@ def main():
         title = f"{what} by gauge - {stem}" + (f" ({span})" if span else "")
         settings = read_blf.short_settings(read_blf.read_log(path)) if path.lower().endswith(".blf") else None
         if args.volts:
-            plot_voltage(df, title, out, args.show, settings=settings)
+            html = plot_voltage(df, title, out, settings=settings)
         else:
-            plot(df, title, out, args.show, placeholder=not strain.CONSTANTS_VERIFIED, settings=settings)
-        print(f"{os.path.basename(path)} -> {out}")
+            html = plot(df, title, out, placeholder=not strain.CONSTANTS_VERIFIED, settings=settings)
+        pages.append(html)
+        print(f"{os.path.basename(path)} -> {out}\n{' ' * len(os.path.basename(path))} -> {html}")
+
+    if args.show and pages:
+        import web_plots
+        web_plots.open_in_browser(pages)
 
 
 if __name__ == "__main__":
