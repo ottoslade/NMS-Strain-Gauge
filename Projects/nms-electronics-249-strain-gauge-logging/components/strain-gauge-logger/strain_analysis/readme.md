@@ -27,6 +27,7 @@ flowchart TD
         SPLOT["5_strain_plots/<br/>strain over time"]
         GCSV[("6_strain_gps_csv/<br/>strain + position per sample")]
         MAP["7_strain_maps/<br/>track map per gauge"]
+        REP["8_reports/<br/>one interactive page:<br/>Voltage | Strain | Track map tabs"]
 
         RAW -. "check_blf.py" .-> CHK
         RAW -- "read_blf.py<br/>decode, gap check" --> VCSV
@@ -36,6 +37,9 @@ flowchart TD
         SCSV -- "gps.py" --> GCSV
         RGPS -- "gps.py<br/>clock alignment, interpolation" --> GCSV
         GCSV -- "gps.py" --> MAP
+        VPLOT -.-> REP
+        SPLOT -.-> REP
+        MAP -.-> REP
     end
 ```
 
@@ -79,7 +83,7 @@ strain_analysis/
 ├── plot_strain.py       Plot strain (or, with --volts, voltage) over time, one panel per gauge
 ├── fake_gps.py          Generate a dummy GPS track CSV with irregular fix timing
 ├── gps.py               Combine a strain log with a GPS track; track maps per gauge
-├── web_plots.py         Interactive HTML plots (Plotly): hover readings, zoom, pan; track map on street/satellite tiles
+├── web_plots.py         Interactive HTML plots (Plotly): hover readings, zoom, pan; satellite track map; tabbed report page
 ├── pipeline.py          Whole pipeline on one .blf (+ GPS if present), with a PASS / WARN / FAIL summary
 ├── fw_check/            PC build of the firmware's BLF writer, used by check_blf.py
 │   ├── fw_writer.c      Write path copied from Core/Src/main.c, Core/Src/blf.c and the HAL RTC driver
@@ -95,7 +99,8 @@ strain_analysis/
     ├── 4_strain_csv/    Microstrain per gauge per sample, from strain.py
     ├── 5_strain_plots/  Strain plots from pipeline.py / plot_strain.py
     ├── 6_strain_gps_csv/ Strain (or volts) plus GPS position per sample, from gps.py / pipeline.py
-    └── 7_strain_maps/   Track maps coloured by strain, from gps.py / pipeline.py
+    ├── 7_strain_maps/   Track maps coloured by strain, from gps.py / pipeline.py
+    └── 8_reports/       One interactive page per log with every plot in tabs, from pipeline.py
 ```
 
 The contents of `strain_logs/` are not committed to git (see `.gitignore`); only the empty folders are. To commit a specific log anyway, use `git add -f strain_logs/1_raw_blf/<file>`.
@@ -135,7 +140,7 @@ If `strain_logs/1_raw_gps/<log name>.csv` exists, the pipeline adds a `gps map` 
 
 `--plot voltage` skips the strain steps entirely, so it doesn't depend on the placeholder constants in `strain.py`. Use it to check raw logs before the hardware values are known; a healthy log then gives `ALL PASS`.
 
-**Interactive plots.** Every plot is saved twice: as a PNG, and as an interactive web page (`.html`, made with [Plotly](https://plotly.com/python/)) next to it. At the end of the run the pages open in your browser:
+**Interactive report.** Every plot is saved as a PNG, and all of them also go onto one interactive web page per log, `strain_logs/8_reports/<log name>.html` (made with [Plotly](https://plotly.com/python/)). It opens in your browser at the end of the run. Tabs across the top choose the plot, **Voltage**, **Strain** or **Track map**, and the number keys `1`-`3` do the same. Only the plots the run made appear.
 
 | Action | What it does |
 |---|---|
@@ -145,11 +150,11 @@ If `strain_logs/1_raw_gps/<log name>.csv` exists, the pipeline adds a `gps map` 
 | Double-click | Back to the full view |
 | Toolbar | Zoom, pan, reset, and download the current view as a PNG |
 
-The six time panels share their axes, so zooming one zooms all six gauges. The track map opens on a street map, with buttons to choose the gauge and to switch to satellite imagery.
+The six time panels share their axes, so zooming one zooms all six gauges. The track map shows satellite imagery, with buttons to choose the gauge. Each tab's plot is drawn the first time you open it, and the address ends in `#1`, `#2` or `#3`, so a link can open straight to a tab.
 
-`--no-show` still saves the pages but doesn't open them, for batch runs. `plot_strain.py --show` and `gps.py --show` open their pages the same way.
+`--no-show` still saves the report but doesn't open it, for batch runs. `plot_strain.py --show` and `gps.py --show` save and open a single plot as its own page.
 
-The pages work offline and can be shared by sending the folder: each folder holds one copy of Plotly's JavaScript (`plotly.min.js`, about 5 MB) that its pages load. Only the map tiles need internet. For long logs the display is thinned once a gauge has more than 200,000 samples. Each stretch keeps its highest and lowest reading, so peaks are never lost, and the CSVs always have every sample.
+The report works offline and can be shared by sending the `8_reports` folder: it holds one copy of Plotly's JavaScript (`plotly.min.js`, about 5 MB) that the pages load. Only the satellite imagery needs internet. For long logs the display is thinned once a gauge has more than 200,000 samples. Each stretch keeps its highest and lowest reading, so peaks are never lost, and the CSVs always have every sample.
 
 Gaps, a cut-off file or clipped readings give WARN. An empty log, or a file that differs from the firmware for any other reason, gives FAIL. `check_blf` shows SKIP if gcc isn't installed.
 
@@ -379,7 +384,7 @@ python gps.py strain_logs/1_raw_blf/<log>.blf --volts                  # map raw
 
 **Positions between fixes.** GPS is about 10 Hz and irregular, while strain is up to 1 kHz. So each strain sample's position is linearly interpolated between the fixes either side of it, but never across a dropout. Samples inside a gap longer than 3× the typical fix interval (at least 0.5 s), or outside the GPS track, get no position. The summary and map show what percentage of samples have one. Distance along the track comes from integrating speed over time if the file has a speed column, otherwise from positions smoothed over about 1 s. Summing raw fix-to-fix distances would overstate it by around 50%, because position noise adds zig-zag to every step.
 
-**Track maps.** The PNG has six panels, one per gauge, all on the same colour scale. The grey line is the GPS path, and points are coloured by strain: blue for compression, red for tension, grey near zero. Straight grey chords with no coloured points are GPS dropouts. With `--volts` (or `pipeline.py --plot voltage`) the maps show volts on a light-to-dark blue scale instead. The interactive page shows one gauge at a time on real street or satellite map tiles. Buttons switch the gauge, and hovering a point shows its strain, time, position and distance along the track.
+**Track maps.** The PNG has six panels, one per gauge, all on the same colour scale. The grey line is the GPS path, and points are coloured by strain: blue for compression, red for tension, grey near zero. Straight grey chords with no coloured points are GPS dropouts. With `--volts` (or `pipeline.py --plot voltage`) the maps show volts on a light-to-dark blue scale instead. The interactive map (the report's Track map tab, or `gps.py --show`) shows one gauge at a time on satellite imagery. Buttons switch the gauge, and hovering a point shows its strain, time, position and distance along the track.
 
 ## Logger Settings
 
@@ -453,9 +458,9 @@ One folder per pipeline stage. Each log keeps the same base name through every s
 |---|---|---|---|
 | `strain_logs/1_raw_blf/` | `<name>.blf` | SD card / `fake_blf.py` | Raw log: a config record, then three CAN messages per sample |
 | `strain_logs/2_voltage_csv/` | `<name>.csv` | `read_blf.py` | Volts per gauge, one row per sample |
-| `strain_logs/3_voltage_plots/` | `<name>.png` + `.html`, `<name>_<start>-<end>s.png` + `.html` | `pipeline.py`, `plot_strain.py --volts` | Volts over time, one panel per gauge |
+| `strain_logs/3_voltage_plots/` | `<name>.png`, `<name>_<start>-<end>s.png` (+ `.html` with `--show`) | `pipeline.py`, `plot_strain.py --volts` | Volts over time, one panel per gauge |
 | `strain_logs/4_strain_csv/` | `<name>_strain.csv` | `strain.py` | Microstrain per gauge, one row per sample |
-| `strain_logs/5_strain_plots/` | `<name>.png` + `.html`, `<name>_<start>-<end>s.png` + `.html` | `pipeline.py`, `plot_strain.py` | Strain over time, one panel per gauge |
+| `strain_logs/5_strain_plots/` | `<name>.png`, `<name>_<start>-<end>s.png` (+ `.html` with `--show`) | `pipeline.py`, `plot_strain.py` | Strain over time, one panel per gauge |
 
 Logs read straight off the SD card get the start time added to their name (`sd_<date>_<time>_strain_gauge_log_000`) so sessions never overwrite each other. See [read_blf.py](#read_blfpy).
 

@@ -231,12 +231,12 @@ def merge(log, gps, values, columns, offset=0.0, max_gap=None):
 
 
 def plot_map(df, info, title, out_path, suffix="_ue", settings=None):
-    """Six track maps, one per gauge, points coloured by value at that spot (PNG),
-    plus an interactive street/satellite map next to it (.html). Returns the HTML path."""
+    """Six track maps, one per gauge, points coloured by value at that spot (PNG).
+    Returns the interactive satellite map as a Plotly figure (see web_plots)."""
     import web_plots
     notes = [n for n in (settings, f"GPS: {info['alignment']}",
                          f"{info['coverage'] * 100:.0f}% of samples have a position") if n]
-    html = web_plots.track_map(df, info, suffix, title, notes, os.path.splitext(out_path)[0] + ".html")
+    web_fig = web_plots.track_map(df, info, suffix, title, notes)
     import matplotlib.pyplot as plt
     from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm, Normalize
 
@@ -292,7 +292,7 @@ def plot_map(df, info, title, out_path, suffix="_ue", settings=None):
     cb.outline.set_visible(False)
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    return html
+    return web_fig
 
 
 def find_gps_for(log_path, log=None):
@@ -343,8 +343,10 @@ def main():
     df.to_csv(csv_out, float_format="%.7g")
     map_out = os.path.join(MAP_DIR, f"{stem}{'_volts' if args.volts else ''}.png")
     what = "Voltage" if args.volts else "Strain"
-    html = plot_map(df, info, f"{what} around the track - {stem}", map_out, suffix,
-                    settings=read_blf.short_settings(log))
+    web_fig = plot_map(df, info, f"{what} around the track - {stem}", map_out, suffix,
+                       settings=read_blf.short_settings(log))
+    import web_plots
+    html = web_plots.save_page(web_fig, os.path.splitext(map_out)[0] + ".html")
     print(f"Saved {csv_out}\nSaved {map_out}\nSaved {html}")
     if args.show:
         import web_plots

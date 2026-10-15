@@ -98,7 +98,7 @@ def break_at_gaps(df, sample_s=None):
 def plot(df, title, out_path, placeholder=False, settings=None):
     """Strain plot: microstrain columns (gaugeN_ue), with a zero line.
     settings: optional label for the logger settings, shown in the subtitle.
-    Saves out_path (PNG) and an interactive .html next to it; returns the HTML path."""
+    Saves out_path (PNG); returns the interactive Plotly figure (see web_plots)."""
     notes = [settings] if settings else []
     if placeholder:
         notes.append("Placeholder hardware constants in strain.py: magnitudes are illustrative only")
@@ -107,16 +107,15 @@ def plot(df, title, out_path, placeholder=False, settings=None):
 
 def plot_voltage(df, title, out_path, settings=None):
     """Voltage plot: raw gauge volts (gaugeN_v) as logged, no conversion.
-    Saves out_path (PNG) and an interactive .html next to it; returns the HTML path."""
+    Saves out_path (PNG); returns the interactive Plotly figure (see web_plots)."""
     return _plot_panels(df, "_v", "Voltage (V)", False, title, out_path, [settings] if settings else [])
 
 
 def _plot_panels(df, suffix, ylabel, zero_line, title, out_path, notes):
     """Six panels, one per gauge, shared axes, line broken at gaps.
-    Saves a static PNG (matplotlib) and an interactive HTML (Plotly)."""
+    Saves a static PNG (matplotlib); returns the interactive figure (Plotly)."""
     import web_plots
-    html = web_plots.time_panels(df, suffix, ylabel, title, list(notes), os.path.splitext(out_path)[0] + ".html",
-                                 zero_line)
+    web_fig = web_plots.time_panels(df, suffix, ylabel, title, list(notes), zero_line)
 
     import matplotlib.pyplot as plt
 
@@ -153,7 +152,7 @@ def _plot_panels(df, suffix, ylabel, zero_line, title, out_path, notes):
         fig.text(0.01, 0.955, "    ·    ".join(notes), fontsize=9, color=TEXT_2, va="top")
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    return html
+    return web_fig
 
 
 def main():
@@ -191,9 +190,11 @@ def main():
         title = f"{what} by gauge - {stem}" + (f" ({span})" if span else "")
         settings = read_blf.short_settings(read_blf.read_log(path)) if path.lower().endswith(".blf") else None
         if args.volts:
-            html = plot_voltage(df, title, out, settings=settings)
+            web_fig = plot_voltage(df, title, out, settings=settings)
         else:
-            html = plot(df, title, out, placeholder=not strain.CONSTANTS_VERIFIED, settings=settings)
+            web_fig = plot(df, title, out, placeholder=not strain.CONSTANTS_VERIFIED, settings=settings)
+        import web_plots
+        html = web_plots.save_page(web_fig, os.path.splitext(out)[0] + ".html")
         pages.append(html)
         print(f"{os.path.basename(path)} -> {out}\n{' ' * len(os.path.basename(path))} -> {html}")
 

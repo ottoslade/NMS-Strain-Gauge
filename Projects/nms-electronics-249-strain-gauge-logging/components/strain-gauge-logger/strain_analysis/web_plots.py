@@ -1,5 +1,8 @@
 """
-Interactive plots as HTML files (Plotly), opened in the browser.
+Interactive plots as HTML pages (Plotly), opened in the browser.
+
+pipeline.py puts all of a log's plots on one page with tabs (save_report);
+plot_strain.py and gps.py can also save a single plot as its own page (save_page).
 
 Standard Plotly controls, all built in:
     hover            exact reading under the mouse (time, value, gauge; on maps
@@ -10,8 +13,9 @@ Standard Plotly controls, all built in:
     toolbar          zoom, pan, reset, download as PNG
 Time panels share their axes, so zooming one zooms all six gauges.
 
-Each HTML file loads plotly.min.js saved once in the same folder, so the
-plots work offline and can be shared with the folder. Map tiles need internet.
+Each HTML page loads plotly.min.js saved once in the same folder, so the
+plots work offline and can be shared with the folder. The track map's
+satellite imagery (Esri World Imagery) needs internet.
 
 Very long logs: above MAX_POINTS samples per gauge, the display is thinned
 with a min/max envelope (each bin keeps its highest and lowest reading), so
@@ -32,7 +36,8 @@ STRAIN_SCALE = [[0.0, "#104281"], [0.17, "#3987e5"], [0.33, "#9ec5f4"], [0.5, "#
 VOLT_SCALE = [[0.0, "#cde2fb"], [0.25, "#6da7ec"], [0.5, "#2a78d6"], [0.75, "#184f95"], [1.0, "#0d366b"]]
 CONFIG = {"scrollZoom": True, "displaylogo": False,
           "toImageButtonOptions": {"format": "png", "scale": 2}}
-SATELLITE = ("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}")
+SATELLITE = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+SATELLITE_CREDIT = "Imagery © Esri, Maxar, Earthstar Geographics, and the GIS User Community"
 
 
 def _gaps(t):
@@ -72,14 +77,106 @@ def _with_gap_breaks(t, y, gaps):
     return t2[order], y2[order]
 
 
-def _save(fig, out_html):
+def save_page(fig, out_html):
+    """One figure as its own page. Returns the path."""
     os.makedirs(os.path.dirname(os.path.abspath(out_html)), exist_ok=True)
     fig.write_html(out_html, include_plotlyjs="directory", config=CONFIG, full_html=True)
     return out_html
 
 
-def time_panels(df, suffix, ylabel, title, notes, out_html, zero_line):
-    """Six linked panels (one per gauge) over time. Returns the HTML path."""
+def _ensure_plotlyjs(folder):
+    """plotly.min.js next to the pages (once per folder), so they work offline."""
+    path = os.path.join(folder, "plotly.min.js")
+    if not os.path.exists(path):
+        from plotly.offline import get_plotlyjs
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(get_plotlyjs())
+
+
+def save_report(sections, title, subtitle, out_html):
+    """Several figures on one page, one tab each. sections: [(tab label, figure)].
+    Each tab's plot is drawn the first time it is opened. Returns the path."""
+    import html
+    import json
+
+    folder = os.path.dirname(os.path.abspath(out_html))
+    os.makedirs(folder, exist_ok=True)
+    _ensure_plotlyjs(folder)
+    tabs = "".join(
+        f'<button role="tab" id="tab-{i}" aria-controls="panel-{i}" aria-selected="{str(i == 0).lower()}" '
+        f'onclick="show({i})">{html.escape(label)}<kbd>{i + 1}</kbd></button>'
+        for i, (label, _) in enumerate(sections))
+    panels = "".join(
+        f'<section role="tabpanel" id="panel-{i}" aria-labelledby="tab-{i}"{"" if i == 0 else " hidden"}>'
+        f'<div class="plot" id="plot-{i}"></div></section>'
+        for i in range(len(sections)))
+    figures = "[" + ",".join(fig.to_json() for _, fig in sections) + "]"
+    page = REPORT_TEMPLATE.format(
+        title=html.escape(title), subtitle=html.escape(subtitle), tabs=tabs, panels=panels,
+        figures=figures, config=json.dumps(CONFIG))
+    with open(out_html, "w", encoding="utf-8") as f:
+        f.write(page)
+    return out_html
+
+
+REPORT_TEMPLATE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<script src="plotly.min.js"></script>
+<style>
+  :root {{ --text: #0b0b0b; --text-2: #52514e; --line: #e6e5e1; --surface: #fcfcfb; --accent: #2a78d6; }}
+  body {{ margin: 0; background: var(--surface); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }}
+  header {{ position: sticky; top: 0; z-index: 10; background: var(--surface); border-bottom: 1px solid var(--line);
+           padding: 14px 20px 0; }}
+  h1 {{ font-size: 18px; font-weight: 600; margin: 0; }}
+  .sub {{ font-size: 13px; color: var(--text-2); margin: 4px 0 10px; }}
+  nav {{ display: flex; gap: 4px; flex-wrap: wrap; }}
+  nav button {{ font: inherit; font-size: 14px; color: var(--text-2); background: none; border: none;
+               border-bottom: 3px solid transparent; padding: 8px 14px 9px; cursor: pointer; }}
+  nav button:hover {{ color: var(--text); }}
+  nav button[aria-selected="true"] {{ color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }}
+  nav button:focus-visible {{ outline: 2px solid var(--accent); outline-offset: -2px; }}
+  kbd {{ font: 11px system-ui, sans-serif; color: var(--text-2); border: 1px solid var(--line); border-radius: 4px;
+        padding: 0 4px; margin-left: 8px; }}
+  section {{ padding: 4px 12px 16px; }}
+  .plot {{ width: 100%; }}
+</style></head>
+<body>
+<header>
+  <h1>{title}</h1>
+  <p class="sub">{subtitle}</p>
+  <nav role="tablist" aria-label="Choose a plot">{tabs}</nav>
+</header>
+<main>{panels}</main>
+<script>
+  const FIGURES = {figures};
+  const CONFIG = {config};
+  const drawn = new Set();
+  function show(i) {{
+    document.querySelectorAll('[role=tabpanel]').forEach((p, j) => p.hidden = j !== i);
+    document.querySelectorAll('[role=tab]').forEach((t, j) => t.setAttribute('aria-selected', j === i));
+    const div = document.getElementById('plot-' + i);
+    if (!drawn.has(i)) {{
+      Plotly.newPlot(div, FIGURES[i].data, FIGURES[i].layout, CONFIG);
+      drawn.add(i);
+    }} else {{
+      Plotly.Plots.resize(div);
+    }}
+    history.replaceState(null, '', '#' + (i + 1));
+  }}
+  document.addEventListener('keydown', e => {{
+    const n = parseInt(e.key, 10);
+    if (n >= 1 && n <= FIGURES.length && !e.ctrlKey && !e.metaKey && !e.altKey) show(n - 1);
+  }});
+  const start = parseInt(location.hash.slice(1), 10);
+  show(start >= 1 && start <= FIGURES.length ? start - 1 : 0);
+</script>
+</body></html>
+"""
+
+
+def time_panels(df, suffix, ylabel, title, notes, zero_line):
+    """Six linked panels (one per gauge) over time. Returns the Plotly figure."""
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -120,11 +217,11 @@ def time_panels(df, suffix, ylabel, title, notes, out_html, zero_line):
     for r in (1, 2, 3):
         fig.update_yaxes(title_text=ylabel, row=r, col=1)
     _layout(fig, title, notes, height=850)
-    return _save(fig, out_html)
+    return fig
 
 
-def track_map(df, info, suffix, title, notes, out_html):
-    """One track map on street/satellite tiles; buttons pick the gauge. Returns the HTML path."""
+def track_map(df, info, suffix, title, notes):
+    """One track map on satellite imagery; buttons pick the gauge. Returns the Plotly figure."""
     import plotly.graph_objects as go
 
     cols = [c for c in df.columns if c.endswith(suffix)]
@@ -149,7 +246,7 @@ def track_map(df, info, suffix, title, notes, out_html):
     # GPS path underneath (all fixes, including where strain has no position)
     gx_lat, gx_lon = info.get("track_latlon", (None, None))
     if gx_lat is not None:
-        fig.add_trace(go.Scattermap(lat=gx_lat, lon=gx_lon, mode="lines", line=dict(color="#7a7974", width=2),
+        fig.add_trace(go.Scattermap(lat=gx_lat, lon=gx_lon, mode="lines", line=dict(color="#ffffff", width=2),
                                     name="GPS path", hoverinfo="skip", showlegend=False))
     for i, (col, name) in enumerate(zip(cols, names)):
         fig.add_trace(go.Scattermap(
@@ -165,20 +262,15 @@ def track_map(df, info, suffix, title, notes, out_html):
                           args=[{"visible": ([True] if first else []) + [j == i for j in range(len(cols))]},
                                 {"title.text": f"{title} - {name}"}])
                      for i, name in enumerate(names)]
-    tile_buttons = [dict(label="Street map", method="relayout", args=[{"map.style": "open-street-map", "map.layers": []}]),
-                    dict(label="Satellite", method="relayout",
-                         args=[{"map.style": "white-bg",
-                                "map.layers": [dict(below="traces", sourcetype="raster", source=[SATELLITE],
-                                                    sourceattribution="Esri World Imagery")]}])]
     lat0, lon0 = info["origin"]
     fig.update_layout(
-        map=dict(style="open-street-map", center=dict(lat=lat0, lon=lon0), zoom=_fit_zoom(gx_lat, gx_lon, pos)),
+        map=dict(style="white-bg", center=dict(lat=lat0, lon=lon0), zoom=_fit_zoom(gx_lat, gx_lon, pos),
+                 layers=[dict(below="traces", sourcetype="raster", source=[SATELLITE],
+                              sourceattribution=SATELLITE_CREDIT)]),
         updatemenus=[dict(type="buttons", direction="right", buttons=gauge_buttons, x=0, y=1.01,
-                          xanchor="left", yanchor="bottom", showactive=True),
-                     dict(type="buttons", direction="right", buttons=tile_buttons, x=1, y=1.01,
-                          xanchor="right", yanchor="bottom", showactive=True)])
+                          xanchor="left", yanchor="bottom", showactive=True)])
     _layout(fig, f"{title} - {names[0]}", notes, height=820, top=150)
-    return _save(fig, out_html)
+    return fig
 
 
 def _fit_zoom(lat, lon, pos, width_px=1100, height_px=620):

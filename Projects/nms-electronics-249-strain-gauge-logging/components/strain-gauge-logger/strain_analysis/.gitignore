@@ -7,6 +7,7 @@
 # strain_logs/5_strain_plots/   strain PNGs from pipeline.py / plot_strain.py
 # strain_logs/6_strain_gps_csv/ strain (or volts) plus GPS position per sample, from gps.py
 # strain_logs/7_strain_maps/    track maps coloured by strain, from gps.py / pipeline.py
+# strain_logs/8_reports/        one interactive page per log (all plots, in tabs), from pipeline.py
 # All of these are data, not code, and can be large. Keep the folders, not the files.
 strain_logs/1_raw_blf/*
 !strain_logs/1_raw_blf/.gitkeep
@@ -24,6 +25,8 @@ strain_logs/6_strain_gps_csv/*
 !strain_logs/6_strain_gps_csv/.gitkeep
 strain_logs/7_strain_maps/*
 !strain_logs/7_strain_maps/.gitkeep
+strain_logs/8_reports/*
+!strain_logs/8_reports/.gitkeep
 # Anything else dropped straight into strain_logs/
 strain_logs/*.blf
 strain_logs/*.csv

@@ -17,6 +17,7 @@ Steps (same as running the scripts one after another):
   strain plot    save strain_logs/5_strain_plots/<name>.png           (both unless --plot voltage)
   gps map        position for every sample and a track map per gauge:
                  strain_logs/6_strain_gps_csv/ and 7_strain_maps/  (if there is GPS data)
+  report         one interactive page with a tab per plot: strain_logs/8_reports/<name>.html
 
 GPS: pass --gps track.csv, or put the track at strain_logs/1_raw_gps/<log name>.csv
 and it is used automatically (fake_gps.py --match-log does this). The map shows
@@ -26,9 +27,10 @@ GPS and logger clocks are lined up; --gps-offset corrects a known clock differen
 --plot voltage skips the strain steps entirely, so it doesn't depend on the
 hardware constants in strain.py.
 
-Every plot is saved as a PNG and as an interactive HTML page (Plotly), and the
-HTML pages open in the browser at the end: hover for exact readings, scroll to
-zoom, drag to box-zoom, double-click to reset. --no-show saves without opening.
+Every plot is saved as a PNG, and all of them go into one interactive report
+page (Plotly) that opens in the browser at the end. Tabs (or keys 1-3) choose the
+plot: Voltage, Strain, Track map. Hover for exact readings, scroll to zoom, drag
+to box-zoom, double-click to reset. --no-show saves the report without opening it.
 
 Ends with a PASS / WARN / FAIL line per step. Exit code is 1 if any step
 FAILs, 0 otherwise. Works from any folder.
@@ -53,7 +55,8 @@ import strain
 
 PASS, WARN, FAIL, SKIP = "PASS", "WARN", "FAIL", "SKIP"
 HERE = os.path.dirname(os.path.abspath(__file__))
-SHOW = True  # open the interactive HTML plots in the browser at the end (off with --no-show)
+SHOW = True  # open the report in the browser at the end (off with --no-show)
+REPORT_DIR = os.path.join(HERE, "strain_logs", "8_reports")
 
 
 def short(p):
@@ -100,8 +103,8 @@ def step_voltage_plot(log, stem):
                       index=pd.Index(log.t, name="t_s"))
     os.makedirs(plot_strain.VOLT_PLOT_DIR, exist_ok=True)
     out = os.path.join(plot_strain.VOLT_PLOT_DIR, f"{stem}.png")
-    html = plot_strain.plot_voltage(df, f"Voltage by gauge - {stem}", out, settings=read_blf.short_settings(log))
-    return PASS, f"{short(out)} (+ .html)", html
+    fig = plot_strain.plot_voltage(df, f"Voltage by gauge - {stem}", out, settings=read_blf.short_settings(log))
+    return PASS, short(out), ("Voltage", fig)
 
 
 def step_strain(log, stem):
@@ -127,9 +130,9 @@ def step_strain_plot(log, ue, stem):
                       index=pd.Index(log.t, name="t_s"))
     os.makedirs(plot_strain.PLOT_DIR, exist_ok=True)
     out = os.path.join(plot_strain.PLOT_DIR, f"{stem}.png")
-    html = plot_strain.plot(df, f"Strain by gauge - {stem}", out, placeholder=not strain.CONSTANTS_VERIFIED,
+    fig = plot_strain.plot(df, f"Strain by gauge - {stem}", out, placeholder=not strain.CONSTANTS_VERIFIED,
                      settings=read_blf.short_settings(log))
-    return PASS, f"{short(out)} (+ .html)", html
+    return PASS, short(out), ("Strain", fig)
 
 
 def step_gps(log, stem, gps_path, offset, values, cols, suffix):
@@ -149,7 +152,8 @@ def step_gps(log, stem, gps_path, offset, values, cols, suffix):
     df.to_csv(csv_out, float_format="%.7g")
     png = os.path.join(gps.MAP_DIR, f"{stem}{'' if kind == 'strain' else '_volts'}.png")
     what = "Strain" if kind == "strain" else "Voltage"
-    html = gps.plot_map(df, info, f"{what} around the track - {stem}", png, suffix, settings=read_blf.short_settings(log))
+    fig = gps.plot_map(df, info, f"{what} around the track - {stem}", png, suffix, settings=read_blf.short_settings(log))
+    section = ("Track map" if kind == "strain" else "Track map (volts)", fig)
 
     problems = []
     if not info["clock_ok"]:
@@ -157,9 +161,9 @@ def step_gps(log, stem, gps_path, offset, values, cols, suffix):
     if info["coverage"] < 0.9:
         problems.append(f"only {info['coverage'] * 100:.0f}% of samples have a position (GPS gaps or short track)")
     if info["coverage"] == 0:
-        return FAIL, "no strain samples fall within the GPS track", html
-    detail = f"{short(csv_out)}, {short(png)} (+ .html)"
-    return (WARN, "; ".join(problems) + f" ({detail})", html) if problems else (PASS, detail, html)
+        return FAIL, "no strain samples fall within the GPS track", section
+    detail = f"{short(csv_out)}, {short(png)}"
+    return (WARN, "; ".join(problems) + f" ({detail})", section) if problems else (PASS, detail, section)
 
 
 def main():
@@ -191,7 +195,7 @@ def main():
     def header(name):
         print(f"\n== {steps.index(name) + 1}/{len(steps)} {name}")
 
-    results, pngs = [], []
+    results, sections = [], []  # sections: (tab label, interactive figure)
     print(f"== 1/{len(steps)} read_blf")
     status, msg, log = step_read(path)
     results.append(("read_blf", status, msg))
@@ -203,18 +207,18 @@ def main():
         print(f"    {results[-1][2]}")
         if do_volts:
             header("voltage plot")
-            status, msg, png = step_voltage_plot(log, stem)
+            status, msg, section = step_voltage_plot(log, stem)
             results.append(("voltage plot", status, msg))
-            pngs.append(png)
+            sections.append(section)
             print(f"    {msg}")
         if do_strain:
             header("strain")
             status, msg, ue = step_strain(log, stem)
             results.append(("strain", status, msg))
             header("strain plot")
-            status, msg, png = step_strain_plot(log, ue, stem)
+            status, msg, section = step_strain_plot(log, ue, stem)
             results.append(("strain plot", status, msg))
-            pngs.append(png)
+            sections.append(section)
             print(f"    {msg}")
         if gps_path:
             header("gps map")
@@ -222,10 +226,18 @@ def main():
                 values, cols, suffix = ue, [f"{g['name']}_ue" for g in strain.GAUGES], "_ue"
             else:
                 values, cols, suffix = log.gauges, [f"gauge{g}_v" for g in range(1, 7)], "_v"
-            status, msg, png = step_gps(log, stem, gps_path, args.gps_offset, values, cols, suffix)
+            status, msg, section = step_gps(log, stem, gps_path, args.gps_offset, values, cols, suffix)
             results.append(("gps map", status, msg))
-            if png:
-                pngs.append(png)
+            if section:
+                sections.append(section)
+
+    report = None
+    if sections:
+        report = web_plots.save_report(
+            sections, f"Strain gauge log - {stem}",
+            f"{len(log)} samples, {log.duration:.3f} s, {read_blf.short_settings(log)}",
+            os.path.join(REPORT_DIR, f"{stem}.html"))
+        results.append(("report", PASS, f"{short(report)} ({', '.join(label for label, _ in sections)})"))
 
     print("\n== Summary: " + os.path.basename(path))
     for name, status, msg in results:
@@ -234,10 +246,10 @@ def main():
     print("  RESULT:", "FAIL" if failed else
           "OK with warnings" if any(s == WARN for _, s, _ in results) else "ALL PASS")
 
-    if SHOW and pngs:
-        print(f"\nOpening {len(pngs)} interactive plot(s) in the browser: hover for readings, scroll to zoom, "
-              "drag to box-zoom, double-click to reset")
-        web_plots.open_in_browser(pngs)
+    if SHOW and report:
+        print("\nOpening the report in the browser: tabs (or keys 1-3) choose the plot; hover for readings, "
+              "scroll to zoom, drag to box-zoom, double-click to reset")
+        web_plots.open_in_browser([report])
     sys.exit(1 if failed else 0)
 
 
