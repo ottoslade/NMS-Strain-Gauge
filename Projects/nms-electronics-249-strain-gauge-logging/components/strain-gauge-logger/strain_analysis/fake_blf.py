@@ -9,6 +9,8 @@ is needed.
     python fake_blf.py -d 60 -o run.blf --csv run_truth.csv
     python fake_blf.py --period-ms 5            # firmware built for 5 ms (averaging follows: 83 scans)
     python fake_blf.py --period-ms 5 --avg 32   # ... with ADC_AVG_SAMPLES overridden to 32
+    python fake_blf.py --vib-hz 120 --vib-v 0.05 --bump-every 2   # change the simulated signal
+    python fake_blf.py --drop 2.5:0.2           # a 0.2 s gap at 2.5 s, like an SD card stall
 
 File layout (all little-endian, packed):
     144 B  BLF_FileHeader   "LOGG"
@@ -55,6 +57,20 @@ ADC_TOTAL_VOLTS = 3.3
 NORTC_DATE = (2026, 3, 1)        # _NORTC_* in FATFS/Target/ffconf.h
 DURATION = 10.0                  # default duration in seconds
 
+# Simulated signal (see gauge_signals); each is a command-line option.
+SIGNAL = dict(
+    offset_v=1.65,     # mid-rail bridge output
+    spread_v=0.03,     # offset step from one gauge to the next
+    load_v=0.25,       # slow load swing amplitude
+    load_hz=1.2,       # ... frequency for gauges 1-2 (+0.4 Hz per pair after)
+    vib_v=0.02,        # vibration amplitude
+    vib_hz=35.0,       # ... frequency for gauges 1-2 (+5 Hz per pair after)
+    bump_v=0.4,        # bump size for gauges 1-2 (-0.1 V per pair after)
+    bump_every=4.0,    # seconds between bumps
+    bump_at=1.0,       # bump start within each period
+    bump_length=0.25,  # bump duration
+)
+
 # ---- struct layouts from shared/blf/blf.h ----
 FILE_HEADER = struct.Struct("<4sI8BQQII8H8H72x")  # 144 B
 BASE_HEADER = struct.Struct("<4sHHII")            # 16 B
@@ -73,19 +89,20 @@ def gauge_signals(t):
     Gauges are paired (1-2, 3-4, 5-6) so neighbours are correlated, and the
     second of each pair sees the opposite sign (tension vs compression).
     """
+    s = SIGNAL
     bump = 0.0
-    phase = t % 4.0
-    if 1.0 <= phase < 1.25:
-        bump = math.sin(math.pi * (phase - 1.0) / 0.25)
+    phase = t % s["bump_every"]
+    if s["bump_at"] <= phase < s["bump_at"] + s["bump_length"]:
+        bump = math.sin(math.pi * (phase - s["bump_at"]) / s["bump_length"])
 
     out = []
     for g in range(6):
         pair = g // 2
         sign = 1 if g % 2 == 0 else -1
-        offset = 1.65 + 0.03 * (g - 2.5)
-        load = 0.25 * math.sin(2 * math.pi * (1.2 + 0.4 * pair) * t + pair)
-        vib = 0.02 * math.sin(2 * math.pi * (35 + 5 * pair) * t)
-        out.append(offset + sign * (load + vib + (0.4 - 0.1 * pair) * bump))
+        offset = s["offset_v"] + s["spread_v"] * (g - 2.5)
+        load = s["load_v"] * math.sin(2 * math.pi * (s["load_hz"] + 0.4 * pair) * t + pair)
+        vib = s["vib_v"] * math.sin(2 * math.pi * (s["vib_hz"] + 5 * pair) * t)
+        out.append(offset + sign * (load + vib + max(0.0, s["bump_v"] - 0.1 * pair) * bump))
     return out
 
 
@@ -194,7 +211,35 @@ def main():
     p.add_argument("--noise", type=float, default=0.004, help="ADC noise std dev in volts (default 0.004)")
     p.add_argument("--seed", type=int, default=0, help="random seed (default 0)")
     p.add_argument("--csv", help="also write the noise-free signals to this CSV (ground truth)")
-    args = p.parse_args()
+    p.add_argument("--drop", action="append", default=[], metavar="T:S",
+                   help="leave out S seconds of samples starting at T seconds, like an SD card stall "
+                        "(repeat for more gaps). The timestamps jump, as on the real board")
+    g = p.add_argument_group("simulated signal (volts at the ADC pin)")
+    for key, help_text in (
+            ("offset_v", "mid-rail output (default 1.65)"),
+            ("spread_v", "offset difference between neighbouring gauges (default 0.03)"),
+            ("load_v", "slow load swing amplitude (default 0.25)"),
+            ("load_hz", "slow load frequency for gauges 1-2, +0.4 Hz per pair (default 1.2)"),
+            ("vib_v", "vibration amplitude (default 0.02)"),
+            ("vib_hz", "vibration frequency for gauges 1-2, +5 Hz per pair (default 35)"),
+            ("bump_v", "bump size for gauges 1-2, 0.1 V less per pair (default 0.4)"),
+            ("bump_every", "seconds between bumps (default 4)"),
+            ("bump_at", "bump start within each period, seconds (default 1)"),
+            ("bump_length", "bump duration, seconds (default 0.25)")):
+        g.add_argument("--" + key.replace("_", "-"), type=float, default=SIGNAL[key], help=help_text)
+    import options
+    args = options.parse(p)
+    for key in SIGNAL:
+        SIGNAL[key] = getattr(args, key)
+    if SIGNAL["bump_every"] <= 0 or SIGNAL["bump_length"] <= 0:
+        p.error("--bump-every and --bump-length must be greater than 0")
+    drops = []
+    for d in args.drop:
+        try:
+            at, length = (float(x) for x in d.split(":"))
+        except ValueError:
+            p.error(f"--drop {d!r}: give START:SECONDS, e.g. 2.5:0.2")
+        drops.append((at, at + length))
 
     rng = random.Random(args.seed)
     now = datetime.datetime.now().replace(microsecond=0)
@@ -218,7 +263,13 @@ def main():
 
     # The firmware only writes whole 96-message batches, so round down.
     n_samples = int(args.duration * 1000 / args.period_ms) // BATCH_SAMPLES * BATCH_SAMPLES
-    n_msgs = n_samples * len(CAN_IDS) + (0 if args.legacy else 1)  # + config record
+    # --drop removes whole 32-sample batches (the firmware only writes whole batches)
+    dropped_batches = {i // BATCH_SAMPLES for i in range(n_samples)
+                       if any(a <= i * args.period_ms / 1000.0 < b for a, b in drops)}
+    drops = [(k * BATCH_SAMPLES * args.period_ms / 1000.0, (k + 1) * BATCH_SAMPLES * args.period_ms / 1000.0)
+             for k in sorted(dropped_batches)]
+    n_kept = n_samples - len(dropped_batches) * BATCH_SAMPLES
+    n_msgs = n_kept * len(CAN_IDS) + (0 if args.legacy else 1)  # + config record
     t0_ticks = round(args.t0 * 1000 / args.period_ms) * period_ticks  # whole loop iterations
 
     truth = open(args.csv, "w", newline="") if args.csv else None
@@ -243,6 +294,8 @@ def main():
 
         for i in range(n_samples):
             t = i * args.period_ms / 1000.0
+            if any(a <= t < b for a, b in drops):
+                continue
             ideal = gauge_signals(t)
             volts = adc_voltages(t, args.avg, args.noise, rng, legacy=args.legacy)
             ts = t0_ticks + i * period_ticks
@@ -256,8 +309,10 @@ def main():
 
     size = FILE_HEADER.size + CONTAINER_SIZE + n_msgs * CAN_MSG_SIZE
     rate = 1000 / args.period_ms
-    print(f"Wrote {args.out}: {n_samples} samples ({n_samples * args.period_ms / 1000:.3f} s at {rate:g} Hz, "
+    print(f"Wrote {args.out}: {n_kept} samples ({n_samples * args.period_ms / 1000:.3f} s at {rate:g} Hz, "
           f"{args.avg}-scan averaging), {n_msgs} CAN messages, {size:,} bytes")
+    if dropped_batches:
+        print(f"    left out {n_samples - n_kept} samples in {len(dropped_batches)} batch(es) of {BATCH_SAMPLES} (--drop)")
 
 
 if __name__ == "__main__":

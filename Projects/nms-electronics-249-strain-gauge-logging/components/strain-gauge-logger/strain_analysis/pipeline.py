@@ -6,6 +6,19 @@ Run the whole analysis pipeline on one .blf log and report each step.
     python pipeline.py path/to/strain_gauge_log_000.blf --plot strain    # strain only
     python pipeline.py path/to/strain_gauge_log_000.blf --gps track.csv  # add GPS track maps
     python pipeline.py path/to/strain_gauge_log_000.blf --smooth 5ms     # smooth the plots
+    python pipeline.py path/to/strain_gauge_log_000.blf --config car.json   # options from a file
+    python pipeline.py --help                                            # every option
+
+Almost everything is adjustable from the command line (see --help; the
+options are shared with the other scripts and described in options.py):
+  steps        --plot none, --no-check, --no-csv, --no-report, --no-images, --no-gps
+  strain       --bridge, --gauge-factor, --gain, --excitation, --zero-v, --polarity, ...
+               for all gauges or per gauge (--gain 3=200), --zero-start, --zero-window
+  what's shown --gauges 1,2  --start 10 --end 25  --smooth 20ms --smooth-method median
+  look         --columns, --strain-range, --volt-range, --independent-y, --line-color,
+               --image-format svg, --dpi, --image-size, --map-range, --basemap none, ...
+  output       --out-root DIR, --name, --report-title, --volt-decimals, --strain-decimals
+  config files --save-config car.json writes the options in use; --config car.json reads them
 
 The logger's sample rate and smoothing are read from the log itself (see
 Core/Inc/logger_config.h), shown in the summary and on every plot.
@@ -53,6 +66,7 @@ import pandas as pd
 
 import check_blf
 import gps
+import options
 import web_plots
 import plot_strain
 import smoothing
@@ -63,22 +77,25 @@ PASS, WARN, FAIL, SKIP = "PASS", "WARN", "FAIL", "SKIP"
 HERE = os.path.dirname(os.path.abspath(__file__))
 SMOOTH = None  # (window_s, n, note) from --smooth
 SHOW = True  # open the report in the browser at the end (off with --no-show)
-REPORT_DIR = os.path.join(HERE, "strain_logs", "8_reports")
+WRITE_CSV = True  # off with --no-csv
 
 
 def short(p):
     """Output paths shown relative to strain_analysis/, wherever this is run from."""
-    return os.path.relpath(p, HERE)
+    full = os.path.abspath(p)
+    return os.path.relpath(full, HERE) if full.startswith(HERE + os.sep) else full
 
 
-def step_read(path):
+def step_read(path, name=None):
     log = read_blf.read_log(path)
     read_blf.summarise(log)
     if not log:
         return FAIL, "no samples (empty log)", log
-    out = read_blf.default_csv_path(path, log)
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    log.write_csv(out)
+    out = None
+    if WRITE_CSV:
+        out = os.path.join(read_blf.CSV_DIR, name + ".csv") if name else read_blf.default_csv_path(path, log)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        log.write_csv(out)
     problems = []
     if log.gaps:
         problems.append(f"{log.missing} samples missing in {len(log.gaps)} gap(s)")
@@ -88,7 +105,8 @@ def step_read(path):
         problems.append(f"{log.irregular} irregular time steps")
     if log.period_mismatch:
         problems.append("sample rate mismatch: " + read_blf.mismatch_message(log))
-    detail = f"{len(log)} samples, {log.duration:.3f} s, {read_blf.short_settings(log)} -> {short(out)}"
+    detail = f"{len(log)} samples, {log.duration:.3f} s, {read_blf.short_settings(log)}" + (
+        f" -> {short(out)}" if out else "")
     return (WARN, "; ".join(problems) + f" ({detail})", log) if problems else (PASS, detail, log)
 
 
@@ -116,18 +134,24 @@ def smoothed_copy(log, df):
 def step_voltage_plot(log, stem):
     df = pd.DataFrame({f"gauge{g}_v": col for g, col in enumerate(log.gauges, 1)},
                       index=pd.Index(log.t, name="t_s"))
-    os.makedirs(plot_strain.VOLT_PLOT_DIR, exist_ok=True)
-    out = os.path.join(plot_strain.VOLT_PLOT_DIR, f"{stem}.png")
+    out = plot_strain.image_path(plot_strain.VOLT_PLOT_DIR, stem)
+    if out:
+        os.makedirs(plot_strain.VOLT_PLOT_DIR, exist_ok=True)
     fig = plot_strain.plot_voltage(df, f"Voltage by gauge - {stem}", out, settings=read_blf.short_settings(log),
                                    smoothed=smoothed_copy(log, df), smooth_note=SMOOTH and SMOOTH[2])
-    return PASS, short(out), ("Voltage", fig)
+    return PASS, short(out) if out else "no image file (--no-images)", ("Voltage", fig)
 
 
 def step_strain(log, stem):
-    ue, zeros, clipped = strain.volts_to_strain(log.t, log.gauges)
-    os.makedirs(strain.STRAIN_DIR, exist_ok=True)
-    out = os.path.join(strain.STRAIN_DIR, f"{stem}_strain.csv")
-    strain.write_strain_csv(out, log.t, ue)
+    try:
+        ue, zeros, clipped = strain.volts_to_strain(log.t, log.gauges)
+    except ValueError as e:  # e.g. zeroing window outside the log
+        return FAIL, str(e), None
+    out = None
+    if WRITE_CSV:
+        os.makedirs(strain.STRAIN_DIR, exist_ok=True)
+        out = os.path.join(strain.STRAIN_DIR, f"{stem}_strain.csv")
+        strain.write_strain_csv(out, log.t, ue)
     for g, col, z, c in zip(strain.GAUGES, ue, zeros, clipped):
         note = f"  ({c} clipped)" if c else ""
         print(f"    {g['name']}: zero {z:.4f} V  min {min(col):9.1f}  max {max(col):9.1f} ue{note}")
@@ -136,7 +160,7 @@ def step_strain(log, stem):
         notes.append(f"{sum(clipped)} clipped readings")
     if not strain.CONSTANTS_VERIFIED:
         notes.append("placeholder hardware constants")
-    detail = short(out)
+    detail = short(out) if out else "not saved (--no-csv)"
     status = WARN if notes else PASS
     return status, ("; ".join(notes) + f" ({detail})") if notes else detail, ue
 
@@ -144,30 +168,45 @@ def step_strain(log, stem):
 def step_strain_plot(log, ue, stem):
     df = pd.DataFrame({f"{g['name']}_ue": col for g, col in zip(strain.GAUGES, ue)},
                       index=pd.Index(log.t, name="t_s"))
-    os.makedirs(plot_strain.PLOT_DIR, exist_ok=True)
-    out = os.path.join(plot_strain.PLOT_DIR, f"{stem}.png")
+    out = plot_strain.image_path(plot_strain.PLOT_DIR, stem)
+    if out:
+        os.makedirs(plot_strain.PLOT_DIR, exist_ok=True)
     fig = plot_strain.plot(df, f"Strain by gauge - {stem}", out, placeholder=not strain.CONSTANTS_VERIFIED,
                            settings=read_blf.short_settings(log),
                            smoothed=smoothed_copy(log, df), smooth_note=SMOOTH and SMOOTH[2])
-    return PASS, short(out), ("Strain", fig)
+    return PASS, short(out) if out else "no image file (--no-images)", ("Strain", fig)
 
 
-def step_gps(log, stem, gps_path, offset, values, cols, suffix):
-    """Merge with the GPS track and draw the track maps."""
+def step_gps(log, stem, gps_path, offset, values, cols, suffix, max_gap=None, draw=True):
+    """Merge with the GPS track and draw the track maps (draw=False: CSV only)."""
     try:
         track = gps.load_gps(gps_path)
     except (OSError, ValueError) as e:
         return FAIL, f"can't read GPS file: {e}", None
     print(f"    GPS: {os.path.basename(gps_path)}: {track.describe()}")
-    df, info = gps.merge(log, track, values, cols, offset)
+    df, info = gps.merge(log, track, values, cols, offset, max_gap)
     print(f"    alignment: {info['alignment']}")
     print(f"    coverage: {info['coverage'] * 100:.1f}% of samples have a position")
     kind = "strain" if suffix == "_ue" else "volts"
-    os.makedirs(gps.GPS_CSV_DIR, exist_ok=True)
-    os.makedirs(gps.MAP_DIR, exist_ok=True)
-    csv_out = os.path.join(gps.GPS_CSV_DIR, f"{stem}_{kind}_gps.csv")
-    df.to_csv(csv_out, float_format="%.7g")
-    png = os.path.join(gps.MAP_DIR, f"{stem}{'' if kind == 'strain' else '_volts'}.png")
+    csv_out = png = section = None
+    if WRITE_CSV:
+        os.makedirs(gps.GPS_CSV_DIR, exist_ok=True)
+        csv_out = os.path.join(gps.GPS_CSV_DIR, f"{stem}_{kind}_gps.csv")
+        df.to_csv(csv_out, float_format="%.7g")
+    problems = []
+    if not info["clock_ok"]:
+        problems.append(info["alignment"] + " (use --gps-offset if that's wrong)")
+    if info["coverage"] < 0.9:
+        problems.append(f"only {info['coverage'] * 100:.0f}% of samples have a position (GPS gaps or short track)")
+    if info["coverage"] == 0:
+        return FAIL, "no strain samples fall within the GPS track", None
+    if not draw:
+        detail = short(csv_out) if csv_out else "merged (--plot none, --no-csv: nothing saved)"
+        return (WARN, "; ".join(problems) + f" ({detail})", None) if problems else (PASS, detail, None)
+
+    png = plot_strain.image_path(gps.MAP_DIR, f"{stem}{'' if kind == 'strain' else '_volts'}")
+    if png:
+        os.makedirs(gps.MAP_DIR, exist_ok=True)
     what = "Strain" if kind == "strain" else "Voltage"
     label = read_blf.short_settings(log)
     map_df = df
@@ -180,40 +219,40 @@ def step_gps(log, stem, gps_path, offset, values, cols, suffix):
         label += "  ·  " + SMOOTH[2]
     fig = gps.plot_map(map_df, info, f"{what} around the track - {stem}", png, suffix, settings=label)
     section = ("Track map" if kind == "strain" else "Track map (volts)", fig)
-
-    problems = []
-    if not info["clock_ok"]:
-        problems.append(info["alignment"] + " (use --gps-offset if that's wrong)")
-    if info["coverage"] < 0.9:
-        problems.append(f"only {info['coverage'] * 100:.0f}% of samples have a position (GPS gaps or short track)")
-    if info["coverage"] == 0:
-        return FAIL, "no strain samples fall within the GPS track", section
-    detail = f"{short(csv_out)}, {short(png)}"
+    detail = ", ".join(short(p) for p in (csv_out, png) if p) or "in the report only"
     return (WARN, "; ".join(problems) + f" ({detail})", section) if problems else (PASS, detail, section)
 
 
 def main():
-    p = argparse.ArgumentParser(description="Run the whole pipeline on one .blf log.")
+    p = argparse.ArgumentParser(description="Run the whole pipeline on one .blf log. "
+                                            "Every option is also accepted in a --config JSON file.")
     p.add_argument("log", help="the .blf log to process")
-    p.add_argument("--plot", choices=("both", "voltage", "strain"), default="both",
-                   help="which plots to make (default both); 'voltage' skips the strain steps")
-    p.add_argument("--gps", help="GPS track CSV (default: strain_logs/1_raw_gps/<log name>.csv if it exists)")
-    p.add_argument("--no-gps", action="store_true", help="skip the GPS step even if a matching file exists")
-    p.add_argument("--no-show", action="store_true",
-                   help="only save the plots; don't open them in the browser")
-    p.add_argument("--smooth", metavar="WINDOW",
-                   help="smooth the plots with a centred moving average, e.g. 5ms (CSVs stay as logged)")
-    p.add_argument("--gps-offset", type=float, default=0.0,
-                   help="seconds to add to GPS times (positive = GPS later); default 0")
-    args = p.parse_args()
-    global SHOW, SMOOTH
-    smooth_window = None
-    if args.smooth:
-        try:
-            smooth_window = smoothing.parse_window(args.smooth)
-        except ValueError as e:
-            p.error(str(e))
+    g = p.add_argument_group("steps")
+    g.add_argument("--plot", choices=("both", "voltage", "strain", "none"), default="both",
+                   help="which plots to make (default both); 'voltage' skips the strain steps; "
+                        "'none' only writes the CSVs")
+    g.add_argument("--gps", help="GPS track CSV (default: strain_logs/1_raw_gps/<log name>.csv if it exists)")
+    g.add_argument("--no-gps", action="store_true", help="skip the GPS step even if a matching file exists")
+    g.add_argument("--no-check", action="store_true", help="skip the byte comparison with the firmware (check_blf)")
+    g.add_argument("--no-csv", action="store_true", help="don't write any CSVs")
+    g.add_argument("--no-report", action="store_true", help="don't make the interactive report page")
+    g.add_argument("--no-show", action="store_true",
+                   help="save the report but don't open it in the browser")
+    g.add_argument("--fail-on-warn", action="store_true", help="exit with code 1 on warnings too, not just failures")
+    g = p.add_argument_group("names")
+    g.add_argument("--name", help="base name for every output file (default: from the log)")
+    g.add_argument("--report-title", help="title at the top of the report page")
+    options.add_map_options(p)
+    options.add_plot_options(p)
+    options.add_smoothing_options(p)
+    options.add_strain_options(p)
+    options.add_read_options(p)
+    options.add_output_options(p)
+    args = options.parse(p)
+
+    global SHOW, SMOOTH, WRITE_CSV
     SHOW = not args.no_show
+    WRITE_CSV = not args.no_csv
     path = args.log
     if not os.path.isfile(path):
         sys.exit(f"File not found: {path}")
@@ -221,75 +260,91 @@ def main():
         sys.exit(f"GPS file not found: {args.gps}")
 
     do_volts = args.plot in ("both", "voltage")
-    do_strain = args.plot in ("both", "strain")
+    do_strain = args.plot in ("both", "strain", "none")
+    draw = args.plot != "none"
     gps_path = None if args.no_gps else (args.gps or gps.find_gps_for(path))
-    steps = ["read_blf", "check_blf"] + (["voltage plot"] if do_volts else []) \
-        + (["strain", "strain plot"] if do_strain else []) + (["gps map"] if gps_path else [])
+    steps = ["read_blf"] + ([] if args.no_check else ["check_blf"]) + (["voltage plot"] if do_volts else []) \
+        + (["strain"] if do_strain else []) + (["strain plot"] if do_strain and draw else []) \
+        + (["gps map" if draw else "gps merge"] if gps_path else [])
 
     def header(name):
         print(f"\n== {steps.index(name) + 1}/{len(steps)} {name}")
 
     results, sections = [], []  # sections: (tab label, interactive figure)
+    if args.changed:
+        results.append(("options", PASS, options.describe_changed(args)))
     print(f"== 1/{len(steps)} read_blf")
-    status, msg, log = step_read(path)
+    status, msg, log = step_read(path, args.name)
     results.append(("read_blf", status, msg))
 
-    if status != FAIL and smooth_window:
-        n = smoothing.window_samples(smooth_window, log.sample_period_s)
-        SMOOTH = (smooth_window, n, smoothing.describe(smooth_window, n, log.sample_period_s))
+    if status != FAIL and web_plots.TIME_RANGE and web_plots.crop(pd.Series(0, index=log.t)).empty:
+        status = FAIL
+        results.append(("time range", FAIL, f"no samples {web_plots.time_range_note()} "
+                                            f"(log covers {log.t[0]:g}-{log.t[-1]:g} s)"))
+
+    if status != FAIL and args.smooth:
+        n = smoothing.window_samples(args.smooth, log.sample_period_s)
+        SMOOTH = (args.smooth, n, smoothing.describe(args.smooth, n, log.sample_period_s))
         results.append(("smoothing", PASS, SMOOTH[2] + " on plots and report; CSVs keep the logged values"))
 
+    stem = None
     if status != FAIL:
-        stem = read_blf.session_stem(path, log)  # one base name for every output
-        header("check_blf")
-        results.append(("check_blf", *step_check(path, log)))
-        print(f"    {results[-1][2]}")
+        stem = args.name or read_blf.session_stem(path, log)  # one base name for every output
+        if not args.no_check:
+            header("check_blf")
+            results.append(("check_blf", *step_check(path, log)))
+            print(f"    {results[-1][2]}")
         if do_volts:
             header("voltage plot")
             status, msg, section = step_voltage_plot(log, stem)
             results.append(("voltage plot", status, msg))
             sections.append(section)
             print(f"    {msg}")
+        ue = None
         if do_strain:
             header("strain")
             status, msg, ue = step_strain(log, stem)
             results.append(("strain", status, msg))
-            header("strain plot")
-            status, msg, section = step_strain_plot(log, ue, stem)
-            results.append(("strain plot", status, msg))
-            sections.append(section)
-            print(f"    {msg}")
-        if gps_path:
-            header("gps map")
+            if ue is not None and draw:
+                header("strain plot")
+                status, msg, section = step_strain_plot(log, ue, stem)
+                results.append(("strain plot", status, msg))
+                sections.append(section)
+                print(f"    {msg}")
+        if gps_path and (ue is not None or not do_strain):
+            name = "gps map" if draw else "gps merge"
+            header(name)
             if do_strain:
                 values, cols, suffix = ue, [f"{g['name']}_ue" for g in strain.GAUGES], "_ue"
             else:
                 values, cols, suffix = log.gauges, [f"gauge{g}_v" for g in range(1, 7)], "_v"
-            status, msg, section = step_gps(log, stem, gps_path, args.gps_offset, values, cols, suffix)
-            results.append(("gps map", status, msg))
+            status, msg, section = step_gps(log, stem, gps_path, args.gps_offset, values, cols, suffix,
+                                            args.max_gap, draw)
+            results.append((name, status, msg))
             if section:
                 sections.append(section)
 
     report = None
-    if sections:
+    if sections and not args.no_report:
         report = web_plots.save_report(
-            sections, f"Strain gauge log - {stem}",
-            f"{len(log)} samples, {log.duration:.3f} s, {read_blf.short_settings(log)}",
-            os.path.join(REPORT_DIR, f"{stem}.html"))
+            sections, args.report_title or f"Strain gauge log - {stem}",
+            f"{len(log)} samples, {log.duration:.3f} s, {read_blf.short_settings(log)}"
+            + (f"  ·  {web_plots.time_range_note()}" if web_plots.TIME_RANGE else ""),
+            os.path.join(web_plots.REPORT_DIR, f"{stem}.html"))
         results.append(("report", PASS, f"{short(report)} ({', '.join(label for label, _ in sections)})"))
 
     print("\n== Summary: " + os.path.basename(path))
     for name, status, msg in results:
         print(f"  {status:4}  {name:12}  {msg}")
     failed = any(s == FAIL for _, s, _ in results)
-    print("  RESULT:", "FAIL" if failed else
-          "OK with warnings" if any(s == WARN for _, s, _ in results) else "ALL PASS")
+    warned = any(s == WARN for _, s, _ in results)
+    print("  RESULT:", "FAIL" if failed else "OK with warnings" if warned else "ALL PASS")
 
     if SHOW and report:
         print("\nOpening the report in the browser: tabs (or keys 1-3) choose the plot; hover for readings, "
               "scroll to zoom, drag to box-zoom, double-click to reset")
         web_plots.open_in_browser([report])
-    sys.exit(1 if failed else 0)
+    sys.exit(1 if failed or (warned and args.fail_on_warn) else 0)
 
 
 if __name__ == "__main__":

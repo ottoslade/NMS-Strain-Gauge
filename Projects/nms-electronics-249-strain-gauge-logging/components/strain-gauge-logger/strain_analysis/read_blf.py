@@ -10,6 +10,7 @@ is needed; numpy is used by StrainLog.as_array() if it is installed.
     python read_blf.py strain_logs/1_raw_blf --all   # every log already copied (or fake)
     python read_blf.py strain_logs/1_raw_blf/x.blf --csv x.csv   # CSV somewhere else
     python read_blf.py strain_logs/1_raw_blf --all --no-csv      # summaries only
+    python read_blf.py x.blf --period-ms 2 --time-from-zero      # see --help for more
 
 Folders:
     strain_logs/1_raw_blf/   .blf logs (copied off the card, or from fake_blf.py)
@@ -58,6 +59,9 @@ OBJ_CAN_MESSAGE = 0x01
 OBJ_LOG_CONTAINER = 0x0A
 CONFIG_CAN_ID = 0x323     # config record: LOG_CONFIG_CAN_ID in Core/Inc/logger_config.h
 DEFAULT_SAMPLE_US = 1000  # sample period assumed if a log has neither a record nor enough samples
+FORCE_PERIOD_US = None    # --period-ms: use this sample period whatever the log says
+TIME_FROM_ZERO = False    # --time-from-zero: shift times so the first sample is at 0 s
+VOLT_DECIMALS = 6         # decimal places of volts in the CSV
 
 
 class StrainLog:
@@ -121,7 +125,7 @@ class StrainLog:
         with open(path, "w", newline="") as f:
             f.write("t_s," + ",".join(f"gauge{g}_v" for g in range(1, 7)) + "\n")
             for i, t in enumerate(self.t):
-                f.write(f"{t:.5f}," + ",".join(f"{g[i]:.6f}" for g in self.gauges) + "\n")
+                f.write(f"{t:.5f}," + ",".join(f"{g[i]:.{VOLT_DECIMALS}f}" for g in self.gauges) + "\n")
 
 
 def _parse_start(st):
@@ -218,6 +222,10 @@ def read_log(path):
         # spaced) and keep both values so the mismatch can be reported.
         log.period_mismatch = (log.sample_period_s, stamped_us / 1e6)
         log.sample_period_s = stamped_us / 1e6
+    if FORCE_PERIOD_US:
+        log.sample_period_s = FORCE_PERIOD_US / 1e6
+        log.config_source = "forced"
+        log.period_mismatch = None
     period_us = round(log.sample_period_s * 1e6)
 
     # The firmware stamps every loop, logged or not, so a dropped sample
@@ -232,6 +240,10 @@ def read_log(path):
         missing = (step + period_us // 2 - 1) // period_us - 1
         if missing > 0:
             log.gaps.append((prev / 1e6, cur / 1e6, missing))
+    if TIME_FROM_ZERO and log.t:
+        t0 = log.t[0]
+        log.t = [t - t0 for t in log.t]
+        log.gaps = [(a - t0, b - t0, n) for a, b, n in log.gaps]
     return log
 
 
@@ -317,6 +329,8 @@ def describe_settings(log):
     rate = f"sampling {log.sample_rate_hz:g} Hz ({period_ms:g} ms)"
     if log.config_source == "timestamps":
         rate += ", inferred from timestamps"
+    elif log.config_source == "forced":
+        rate += ", set with --period-ms"
     elif log.period_mismatch:
         rate += ", from timestamps (config record disagrees, see below)"
     else:
@@ -345,6 +359,9 @@ def mismatch_message(log):
     return (f"config record says {record_s * 1000:g} ms ({1 / record_s:g} Hz) but timestamps step "
             f"{stamped_s * 1000:g} ms ({1 / stamped_s:g} Hz); using the timestamps. "
             f"Check LOG_SAMPLE_PERIOD_MS and the firmware's timestamp step")
+
+
+SHOW_GAPS = 5  # gaps listed by summarise()
 
 
 def summarise(log):
@@ -376,10 +393,10 @@ def summarise(log):
     if log.gaps:
         pct = 100 * log.missing / (len(log) + log.missing)
         print(f"    GAPS: {log.missing} samples missing ({pct:.2f}%) in {len(log.gaps)} gap(s)")
-        for before, after, n in sorted(log.gaps, key=lambda g: -g[2])[:5]:
+        for before, after, n in sorted(log.gaps, key=lambda g: -g[2])[:SHOW_GAPS]:
             print(f"        {n:6d} missing between {before:.3f} s and {after:.3f} s")
-        if len(log.gaps) > 5:
-            print(f"        ... and {len(log.gaps) - 5} smaller gap(s); see log.gaps")
+        if len(log.gaps) > SHOW_GAPS:
+            print(f"        ... and {len(log.gaps) - SHOW_GAPS} smaller gap(s); see log.gaps")
     else:
         print("    no gaps: every sample present")
     for g, v in enumerate(log.gauges, 1):
@@ -394,7 +411,14 @@ def main():
     p.add_argument("--copy", action="store_true", help="copy the logs into strain_logs/1_raw_blf/")
     p.add_argument("--csv", help="write the CSV here instead of strain_logs/2_voltage_csv/ (single file only)")
     p.add_argument("--no-csv", action="store_true", help="don't save CSVs")
-    args = p.parse_args()
+    p.add_argument("--dest", help="with --copy: copy into this folder instead of strain_logs/1_raw_blf/")
+    p.add_argument("--max-gaps", type=int, default=5, metavar="N", help="gaps listed per log (default 5)")
+    import options
+    options.add_read_options(p)
+    options.add_output_options(p)
+    args = options.parse(p)
+    global SHOW_GAPS
+    SHOW_GAPS = args.max_gaps
 
     src = args.source
     if src is None:
@@ -413,8 +437,8 @@ def main():
         if not files:
             sys.exit(f"No {LOG_GLOB} files in {src}")
         if args.copy:
-            new = copy_logs(src)
-            print(f"Copied {len(new)} new file(s) into {RAW_DIR}")
+            new = copy_logs(src, args.dest or RAW_DIR)
+            print(f"Copied {len(new)} new file(s) into {args.dest or RAW_DIR}")
             for path in new:
                 print("    " + os.path.basename(path))
         if not args.all:

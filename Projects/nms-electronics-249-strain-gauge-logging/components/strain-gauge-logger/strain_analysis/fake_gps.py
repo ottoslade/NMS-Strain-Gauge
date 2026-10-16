@@ -100,7 +100,8 @@ def main():
                    help="track centre 'lat,lon' (default near State College, PA)")
     p.add_argument("--seed", type=int, default=0, help="random seed (default 0)")
     p.add_argument("-o", "--out", help="output CSV path")
-    args = p.parse_args()
+    import options
+    args = options.parse(p)
     if not 0 <= args.jitter < 0.9:
         p.error("--jitter must be between 0 and 0.9")
     rng = random.Random(args.seed)

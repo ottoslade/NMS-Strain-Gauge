@@ -17,6 +17,13 @@ The hardware constants below are PLACEHOLDERS: nothing in the repo records
 the bridge type, excitation, amplifier gain or gauge factor. Fill them in
 from the board schematic and gauge datasheet, then set CONSTANTS_VERIFIED.
 
+Every constant can also be set for one run from the command line, for all
+gauges or per gauge (see --help and options.py), or kept in a --config file:
+
+    python strain.py x.csv --bridge half_bending --gain 200 --gauge-factor 3=2.12,4=2.12
+    python strain.py x.csv --zero-start 2 --zero-window 1     # zero on 2-3 s instead of 0-0.5 s
+    python strain.py x.csv --zero-v 1.651,1.648,auto,auto,auto,auto
+
 From your own code:
 
     from strain import strain_from_csv
@@ -29,6 +36,7 @@ import glob
 import os
 import sys
 
+import options
 import read_blf
 
 # =============================================================================
@@ -76,7 +84,8 @@ GAUGES = [
 ]
 
 POISSON_RATIO = 0.3     # material Poisson's ratio, used by the *_poisson bridges (steel ~0.29, aluminium ~0.33)
-ZERO_WINDOW_S = 0.5     # seconds at the start of each log averaged for automatic zeroing
+ZERO_WINDOW_S = 0.5     # seconds averaged for automatic zeroing ...
+ZERO_START_S = 0.0      # ... starting this long after the first sample
 ADC_MIN_V = 0.01        # readings at or beyond these are treated as clipped
 ADC_MAX_V = 3.29        # (ADC range is 0 - 3.3 V)
 
@@ -84,6 +93,7 @@ ADC_MAX_V = 3.29        # (ADC range is 0 - 3.3 V)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STRAIN_DIR = os.path.join(HERE, "strain_logs", "4_strain_csv")
+CSV_DECIMALS = 2        # decimal places of microstrain in the CSV
 
 
 def bridge_strain(vr, g):
@@ -108,7 +118,11 @@ def bridge_strain(vr, g):
 def zero_voltage(t, volts, g):
     if g["zero_v"] is not None:
         return g["zero_v"]
-    window = [v for ti, v in zip(t, volts) if ti - t[0] < ZERO_WINDOW_S]
+    lo = t[0] + ZERO_START_S
+    window = [v for ti, v in zip(t, volts) if lo <= ti < lo + ZERO_WINDOW_S]
+    if not window:
+        raise ValueError(f"no samples in the zeroing window {ZERO_START_S:g}-{ZERO_START_S + ZERO_WINDOW_S:g} s "
+                         f"after the first sample; the log is {t[-1] - t[0]:.3f} s long")
     return sum(window) / len(window)
 
 
@@ -148,14 +162,18 @@ def write_strain_csv(path, t, ue):
     with open(path, "w", newline="") as f:
         f.write("t_s," + ",".join(f"{g['name']}_ue" for g in GAUGES) + "\n")
         for i, ti in enumerate(t):
-            f.write(f"{ti:.5f}," + ",".join(f"{col[i]:.2f}" for col in ue) + "\n")
+            f.write(f"{ti:.5f}," + ",".join(f"{col[i]:.{CSV_DECIMALS}f}" for col in ue) + "\n")
 
 
 def main():
     p = argparse.ArgumentParser(description="Convert gauge voltages to microstrain, one row per logged sample.")
     p.add_argument("files", nargs="+", help="CSV files from read_blf.py, or .blf logs (wildcards are fine)")
-    p.add_argument("-o", "--out-dir", default=STRAIN_DIR, help="output folder (default strain_logs/4_strain_csv/)")
-    args = p.parse_args()
+    p.add_argument("-o", "--out-dir", help="output folder (default strain_logs/4_strain_csv/)")
+    options.add_strain_options(p)
+    options.add_read_options(p)
+    options.add_output_options(p)
+    args = options.parse(p)
+    args.out_dir = args.out_dir or STRAIN_DIR
 
     if len(GAUGES) != 6:
         sys.exit("GAUGES must have exactly 6 entries")
@@ -175,13 +193,19 @@ def main():
         if not t:
             print(f"skipped {os.path.basename(path)}: no samples")
             continue
-        ue, zeros, clipped = volts_to_strain(t, volts)
+        try:
+            ue, zeros, clipped = volts_to_strain(t, volts)
+        except ValueError as e:
+            print(f"skipped {os.path.basename(path)}: {e}")
+            continue
         stem = read_blf.session_stem(path)  # same base name as the voltage CSV
         out = os.path.join(args.out_dir, f"{stem}_strain.csv")
         write_strain_csv(out, t, ue)
         print(f"{os.path.basename(path)}: {len(t)} samples -> {out}")
         for g, col, z, c in zip(GAUGES, ue, zeros, clipped):
-            src = "set" if g["zero_v"] is not None else f"first {ZERO_WINDOW_S:g} s"
+            src = "set" if g["zero_v"] is not None else (
+                f"first {ZERO_WINDOW_S:g} s" if not ZERO_START_S else
+                f"{ZERO_START_S:g}-{ZERO_START_S + ZERO_WINDOW_S:g} s")
             note = f"  ({c} clipped samples)" if c else ""
             print(f"    {g['name']}: zero {z:.4f} V ({src})  min {min(col):9.1f}  max {max(col):9.1f} ue{note}")
 

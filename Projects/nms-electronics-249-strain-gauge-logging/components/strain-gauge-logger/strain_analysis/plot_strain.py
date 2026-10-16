@@ -6,6 +6,7 @@ Plot strain (or raw voltage) over time for each gauge, one panel per gauge.
     python plot_strain.py strain_logs/4_strain_csv/x_strain.csv --show       # also open it in the browser
     python plot_strain.py strain_logs/4_strain_csv/x_strain.csv --start 2 --end 4   # zoom to 2-4 s
     python plot_strain.py strain_logs/2_voltage_csv/x.csv --volts            # plot volts, no conversion
+    python plot_strain.py x_strain.csv --gauges 1,2 --columns 1 --strain-range 800   # see --help for more
 
 Strain input is a strain CSV from strain.py; a volts CSV or a .blf log also
 works and is converted with strain.py's constants first. Saves
@@ -14,6 +15,10 @@ strain_logs/5_strain_plots/<name>.png and an interactive <name>.html next to it
 
 With --volts, input is a volts CSV from read_blf.py or a .blf log, plotted
 as-is (no hardware constants involved). Saves strain_logs/3_voltage_plots/<name>.png and .html.
+
+Every option (gauges shown, layout, axis ranges, colours, image format and
+size, smoothing, strain constants for .blf/volts input, ...) is listed by
+--help and described in options.py; --config reads them from a JSON file.
 
 Needs pandas, matplotlib and plotly:
 
@@ -31,16 +36,27 @@ matplotlib.use("Agg")  # PNGs are drawn off-screen; interactive plots are HTML
 import numpy as np
 import pandas as pd
 
+import options
 import read_blf
+import web_plots
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLOT_DIR = os.path.join(HERE, "strain_logs", "5_strain_plots")
 VOLT_PLOT_DIR = os.path.join(HERE, "strain_logs", "3_voltage_plots")
 
-# Colours: one series per panel, so every panel uses the same line colour and
-# the panel title names the gauge. Text stays in neutral ink.
-LINE = "#2a78d6"
-RAW_UNDER = "#c3c2b7"  # logged data under a smoothed line
+# Image files. Line colours, panel layout and axis ranges are shared with the
+# interactive plots and live in web_plots.py; one series per panel, so every
+# panel uses the same line colour and the panel title names the gauge.
+SAVE_IMAGES = True
+IMAGE_FORMAT = "png"
+DPI = 150
+FIG_SIZE = (12, 8)       # inches, time plots
+MAP_FIG_SIZE = (12, 11)  # inches, track maps (gps.py)
+
+
+def image_path(folder, stem):
+    """folder/stem.<IMAGE_FORMAT>, or None when images are turned off."""
+    return os.path.join(folder, f"{stem}.{IMAGE_FORMAT}") if SAVE_IMAGES else None
 
 
 def wrap_notes(notes, width=150, sep="    ·    "):
@@ -132,10 +148,18 @@ def plot_voltage(df, title, out_path, settings=None, smoothed=None, smooth_note=
 
 
 def _plot_panels(df, suffix, ylabel, zero_line, title, out_path, notes, smoothed=None):
-    """Six panels, one per gauge, shared axes, line broken at gaps.
-    Saves a static PNG (matplotlib); returns the interactive figure (Plotly)."""
-    import web_plots
-    web_fig = web_plots.time_panels(df, suffix, ylabel, title, list(notes), zero_line, smoothed)
+    """One panel per gauge (all six, or web_plots.GAUGES_SHOWN), line broken at gaps.
+    Saves a static image to out_path (matplotlib) unless it is None; returns
+    the interactive figure (Plotly)."""
+    if web_plots.time_range_note():
+        notes = notes + [web_plots.time_range_note()]
+    web_fig = web_plots.time_panels(df, suffix, ylabel, title, list(notes), zero_line, smoothed)  # selects and crops too
+    if out_path is None or not SAVE_IMAGES:
+        return web_fig
+    cols = web_plots.gauge_columns(df, suffix)
+    df = web_plots.crop(df[cols])
+    if smoothed is not None:
+        smoothed = web_plots.crop(smoothed[cols])
 
     import matplotlib.pyplot as plt
 
@@ -150,15 +174,21 @@ def _plot_panels(df, suffix, ylabel, zero_line, title, out_path, notes, smoothed
         "xtick.color": TEXT_2, "ytick.color": TEXT_2, "text.color": TEXT,
         "axes.facecolor": SURFACE, "figure.facecolor": SURFACE,
     })
-    df = df.rename(columns=lambda c: c.removesuffix(suffix).replace("gauge", "Gauge "))
-    axes = df.plot(subplots=True, layout=(3, 2), sharex=True, sharey=True, legend=False,
-                   color=RAW_UNDER if smoothed is not None else LINE, linewidth=1.0, figsize=(12, 8))
-    if smoothed is not None:  # smoothed line on top of the faint logged data
-        for ax, col in zip(axes.flat, smoothed.columns):
-            ax.plot(smoothed.index, smoothed[col], color=LINE, linewidth=1.3)
-    for ax, name in zip(axes.flat, df.columns):
-        ax.set_title(name, loc="left", fontsize=11, color=TEXT)
-        if zero_line:
+    nrows, ncols = web_plots.grid_shape(len(cols))
+    fig, axes = plt.subplots(nrows, ncols, sharex=True, sharey=web_plots.SHARE_Y, figsize=FIG_SIZE, squeeze=False)
+    width = web_plots.LINE_WIDTH
+    for ax, col in zip(axes.flat, cols):
+        ax.plot(df.index, df[col], color=web_plots.RAW_UNDER if smoothed is not None else web_plots.LINE,
+                linewidth=width)
+        if smoothed is not None:  # smoothed line on top of the faint logged data
+            ax.plot(smoothed.index, smoothed[col], color=web_plots.LINE, linewidth=width * 1.3)
+    for ax in axes.flat[len(cols):]:
+        ax.set_visible(False)
+    for ax, col in zip(axes.flat, cols):
+        ax.set_title(col.removesuffix(suffix).replace("gauge", "Gauge "), loc="left", fontsize=11, color=TEXT)
+        if web_plots.Y_RANGE.get(suffix):
+            ax.set_ylim(web_plots.Y_RANGE[suffix])
+        if zero_line and web_plots.ZERO_LINE:
             ax.axhline(0, color=ZERO, linewidth=0.8, zorder=0)
         ax.grid(True, color=GRID, linewidth=0.6)
         ax.set_axisbelow(True)
@@ -167,16 +197,16 @@ def _plot_panels(df, suffix, ylabel, zero_line, title, out_path, notes, smoothed
         ax.tick_params(length=0)
     for ax in axes[:, 0]:
         ax.set_ylabel(ylabel)
-    for ax in axes[-1, :]:
-        ax.set_xlabel("Time (s)")
+    for r, c in web_plots.bottom_cells(len(cols), ncols):
+        axes[r, c].set_xlabel("Time (s)")
+        axes[r, c].xaxis.set_tick_params(labelbottom=True)
 
-    fig = axes.flat[0].get_figure()
     note_lines = wrap_notes(notes)
     fig.tight_layout(rect=(0, 0, 1, 0.965 - 0.02 * len(note_lines)))
     fig.suptitle(title, x=0.01, y=0.99, ha="left", va="top", fontsize=13, color=TEXT)
     if note_lines:
         fig.text(0.01, 0.955, "\n".join(note_lines), fontsize=9, color=TEXT_2, va="top", linespacing=1.5)
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=DPI)
     plt.close(fig)
     return web_fig
 
@@ -188,13 +218,15 @@ def main():
                    help="plot the logged voltages instead of strain (volts CSVs or .blf logs)")
     p.add_argument("-o", "--out-dir",
                    help="output folder (default strain_logs/5_strain_plots/, or 3_voltage_plots/ with --volts)")
-    p.add_argument("--start", type=float, help="start time in seconds")
-    p.add_argument("--end", type=float, help="end time in seconds")
+    p.add_argument("--title", help="plot title (default '<Strain|Voltage> by gauge - <name>')")
     p.add_argument("--show", action="store_true",
                    help="also open the interactive plots in the browser")
-    p.add_argument("--smooth", metavar="WINDOW",
-                   help="overlay a centred moving average, e.g. 5ms (see smoothing.py)")
-    args = p.parse_args()
+    options.add_plot_options(p)
+    options.add_smoothing_options(p)
+    options.add_strain_options(p)
+    options.add_read_options(p)
+    options.add_output_options(p)
+    args = options.parse(p)
 
     import strain
     out_dir = args.out_dir or (VOLT_PLOT_DIR if args.volts else PLOT_DIR)
@@ -206,37 +238,36 @@ def main():
         except (OSError, ValueError) as e:
             print(f"skipped {path}: {e}")
             continue
-        df = df.loc[args.start:args.end]
-        if df.empty:
+        if web_plots.crop(df).empty:
             print(f"skipped {path}: no samples in range")
             continue
         stem = read_blf.session_stem(path).removesuffix("_strain")  # same base name as the other stages
+        shown = web_plots.crop(df)
         zoomed = args.start is not None or args.end is not None
-        span = f"{df.index[0]:g}-{df.index[-1]:g}s" if zoomed else ""
-        out = os.path.join(out_dir, f"{stem}_{span}.png" if span else f"{stem}.png")
+        span = f"{shown.index[0]:g}-{shown.index[-1]:g}s" if zoomed else ""
+        name = f"{stem}_{span}" if span else stem
+        out = image_path(out_dir, name)
         what = "Voltage" if args.volts else "Strain"
-        title = f"{what} by gauge - {stem}" + (f" ({span})" if span else "")
+        title = args.title or f"{what} by gauge - {stem}" + (f" ({span})" if span else "")
         settings = read_blf.short_settings(read_blf.read_log(path)) if path.lower().endswith(".blf") else None
         smoothed = note = None
         if args.smooth:
             import smoothing
-            window = smoothing.parse_window(args.smooth)
-            cols, n = smoothing.smooth(df.index.to_numpy(), [df[c] for c in df.columns], window)
+            cols, n = smoothing.smooth(df.index.to_numpy(), [df[c] for c in df.columns], args.smooth)
             smoothed = pd.DataFrame(dict(zip(df.columns, cols)), index=df.index)
             period = float(np.median(np.diff(df.index.to_numpy()))) if len(df) > 1 else 0.001
-            note = smoothing.describe(window, n, period)
+            note = smoothing.describe(args.smooth, n, period)
         if args.volts:
             web_fig = plot_voltage(df, title, out, settings=settings, smoothed=smoothed, smooth_note=note)
         else:
             web_fig = plot(df, title, out, placeholder=not strain.CONSTANTS_VERIFIED, settings=settings,
                            smoothed=smoothed, smooth_note=note)
-        import web_plots
-        html = web_plots.save_page(web_fig, os.path.splitext(out)[0] + ".html")
+        html = web_plots.save_page(web_fig, os.path.join(out_dir, name + ".html"))
         pages.append(html)
-        print(f"{os.path.basename(path)} -> {out}\n{' ' * len(os.path.basename(path))} -> {html}")
+        pad = " " * len(os.path.basename(path))
+        print(f"{os.path.basename(path)} -> {out}\n{pad} -> {html}" if out else f"{os.path.basename(path)} -> {html}")
 
     if args.show and pages:
-        import web_plots
         web_plots.open_in_browser(pages)
 
 

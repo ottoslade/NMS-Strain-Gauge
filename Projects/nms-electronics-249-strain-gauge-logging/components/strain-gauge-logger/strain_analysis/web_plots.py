@@ -22,15 +22,35 @@ with a min/max envelope (each bin keeps its highest and lowest reading), so
 peaks are never lost. The CSVs always have full resolution.
 """
 
+import math
 import os
 import webbrowser
 
 import numpy as np
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPORT_DIR = os.path.join(HERE, "strain_logs", "8_reports")
+
+# Plot settings, shared with the PNGs in plot_strain.py and gps.py. Each can be
+# changed from the command line (see options.py); these are the defaults.
 MAX_POINTS = 200_000       # per gauge line before the display is thinned
 MAX_MAP_POINTS = 50_000    # per gauge on the track map
 LINE = "#2a78d6"
-RAW_UNDER = "#c3c2b7"  # logged data under a smoothed line
+RAW_UNDER = "#c3c2b7"      # logged data under a smoothed line
+LINE_WIDTH = 1.0
+GAUGES_SHOWN = None        # 0-based gauge indexes to plot and map; None = all
+TIME_RANGE = None          # (start, end) seconds shown, either may be None; None = everything
+PANEL_COLS = 2             # panels per row
+SHARE_Y = True             # one y scale for every panel
+ZERO_LINE = True           # zero line on strain plots
+Y_RANGE = {"_ue": None, "_v": None}  # fixed (min, max) axis per quantity
+PLOT_HEIGHT = None         # interactive time plot height in px; None = by rows
+MAP_HEIGHT = 820
+MARKER_SIZE = 7
+MAP_RANGE = None           # fixed (min, max) map colour scale
+MAP_ZOOM = None            # None = fit the track
+MAP_GAUGE = 1              # gauge shown first on the map (1-6)
+BASEMAP = "satellite"      # or "none"
 TEXT, TEXT_2, GRID, SURFACE = "#0b0b0b", "#52514e", "#e6e5e1", "#fcfcfb"
 STRAIN_SCALE = [[0.0, "#104281"], [0.17, "#3987e5"], [0.33, "#9ec5f4"], [0.5, "#f0efec"],
                 [0.67, "#f2a6a5"], [0.83, "#e34948"], [1.0, "#9c2827"]]
@@ -39,6 +59,44 @@ CONFIG = {"scrollZoom": True, "displaylogo": False,
           "toImageButtonOptions": {"format": "png", "scale": 2}}
 SATELLITE = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
 SATELLITE_CREDIT = "Imagery © Esri, Maxar, Earthstar Geographics, and the GIS User Community"
+
+
+def gauge_columns(df, suffix):
+    """The gauge columns to show, in order: all of them, or the --gauges selection."""
+    cols = [c for c in df.columns if c.endswith(suffix)]
+    if GAUGES_SHOWN is not None:
+        cols = [cols[i] for i in GAUGES_SHOWN if i < len(cols)]
+    return cols
+
+
+def crop(df):
+    """Rows inside TIME_RANGE (all of them if no range is set)."""
+    if TIME_RANGE is None:
+        return df
+    return df.loc[TIME_RANGE[0]:TIME_RANGE[1]]
+
+
+def time_range_note():
+    if TIME_RANGE is None:
+        return None
+    lo, hi = TIME_RANGE
+    return f"showing {'start' if lo is None else f'{lo:g} s'} to {'end' if hi is None else f'{hi:g} s'}"
+
+
+def grid_shape(n):
+    """(rows, columns) of panels for n gauges."""
+    cols = max(1, min(PANEL_COLS, n))
+    return math.ceil(n / cols), cols
+
+
+def bottom_cells(n, ncols):
+    """(row, col), 0-based, of the lowest panel in each column."""
+    rows = math.ceil(n / ncols)
+    out = []
+    for c in range(min(ncols, n)):
+        r = rows - 1 if (rows - 1) * ncols + c < n else rows - 2
+        out.append((r, c))
+    return out
 
 
 def _gaps(t):
@@ -183,7 +241,10 @@ def time_panels(df, suffix, ylabel, title, notes, zero_line, smoothed=None):
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
-    cols = [c for c in df.columns if c.endswith(suffix)]
+    cols = gauge_columns(df, suffix)
+    df = crop(df)
+    if smoothed is not None:
+        smoothed = crop(smoothed)
     names = [c.removesuffix(suffix).replace("gauge", "Gauge ") for c in cols]
     unit = "µε" if suffix == "_ue" else "V"
     fmt = ".1f" if suffix == "_ue" else ".4f"
@@ -195,8 +256,10 @@ def time_panels(df, suffix, ylabel, title, notes, zero_line, smoothed=None):
     if thinned:
         notes = notes + [f"display thinned to ~{MAX_POINTS:,} points per gauge (peaks kept; CSV has every sample)"]
 
-    fig = make_subplots(rows=3, cols=2, shared_xaxes="all", shared_yaxes="all",
-                        subplot_titles=names, vertical_spacing=0.08, horizontal_spacing=0.05)
+    nrows, ncols = grid_shape(len(cols))
+    fig = make_subplots(rows=nrows, cols=ncols, shared_xaxes="all", shared_yaxes="all" if SHARE_Y else False,
+                        subplot_titles=names, vertical_spacing=min(0.08, 0.3 / nrows),
+                        horizontal_spacing=0.05 if SHARE_Y else 0.07)
     def trace_xy(y):
         tt, yy = minmax_thin(t, y, MAX_POINTS)
         tt, yy = _with_gap_breaks(tt, yy, gaps)
@@ -211,28 +274,30 @@ def time_panels(df, suffix, ylabel, title, notes, zero_line, smoothed=None):
         tt, yy = trace_xy(df[col].to_numpy(dtype=float))
         under = smoothed is not None
         fig.add_trace(go.Scattergl(
-            x=tt, y=yy, mode="lines", line=dict(color=RAW_UNDER if under else LINE, width=1), name=name,
+            x=tt, y=yy, mode="lines", line=dict(color=RAW_UNDER if under else LINE, width=LINE_WIDTH), name=name,
             showlegend=False,
             hovertemplate=(f"<b>{name}</b>{' logged' if under else ''}<br>t = %{{x:.3f}} s"
                            f"<br>%{{y:{fmt}}} {unit}<extra></extra>")),
-            row=i // 2 + 1, col=i % 2 + 1)
+            row=i // ncols + 1, col=i % ncols + 1)
         if under:
             ts, ys = trace_xy(smoothed[col].to_numpy(dtype=float))
             fig.add_trace(go.Scattergl(
-                x=ts, y=ys, mode="lines", line=dict(color=LINE, width=1.5), name=f"{name} smoothed",
+                x=ts, y=ys, mode="lines", line=dict(color=LINE, width=LINE_WIDTH * 1.5), name=f"{name} smoothed",
                 showlegend=False,
                 hovertemplate=f"<b>{name}</b> smoothed<br>t = %{{x:.3f}} s<br>%{{y:{fmt}}} {unit}<extra></extra>"),
-                row=i // 2 + 1, col=i % 2 + 1)
-    if zero_line:
+                row=i // ncols + 1, col=i % ncols + 1)
+    if zero_line and ZERO_LINE:
         fig.add_hline(y=0, line=dict(color="#9a9890", width=1))
     fig.update_xaxes(showgrid=True, gridcolor=GRID, zeroline=False, showspikes=True, spikemode="across",
                      spikethickness=1, spikecolor="#9a9890", spikedash="dot")
     fig.update_yaxes(showgrid=True, gridcolor=GRID, zeroline=False)
-    for c in (1, 2):
-        fig.update_xaxes(title_text="Time (s)", row=3, col=c)
-    for r in (1, 2, 3):
+    if Y_RANGE.get(suffix):
+        fig.update_yaxes(range=list(Y_RANGE[suffix]))
+    for r, c in bottom_cells(len(cols), ncols):
+        fig.update_xaxes(title_text="Time (s)", showticklabels=True, row=r + 1, col=c + 1)
+    for r in range(1, nrows + 1):
         fig.update_yaxes(title_text=ylabel, row=r, col=1)
-    _layout(fig, title, notes, height=850)
+    _layout(fig, title, notes, height=PLOT_HEIGHT or 180 + 223 * nrows)
     return fig
 
 
@@ -240,24 +305,24 @@ def track_map(df, info, suffix, title, notes):
     """One track map on satellite imagery; buttons pick the gauge. Returns the Plotly figure."""
     import plotly.graph_objects as go
 
-    cols = [c for c in df.columns if c.endswith(suffix)]
+    cols = gauge_columns(df, suffix)
     names = [c.removesuffix(suffix).replace("gauge", "Gauge ") for c in cols]
     strain = suffix == "_ue"
-    pos = df.dropna(subset=["latitude", "longitude"])
+    pos = crop(df).dropna(subset=["latitude", "longitude"])
     stride = max(1, len(pos) // MAX_MAP_POINTS)
     pos = pos.iloc[::stride]
-    vals = pos[cols].to_numpy(dtype=float)
+    cmin, cmax = map_limits(pos[cols].to_numpy(dtype=float), strain)
     if strain:
-        lim = float(np.nanmax(np.abs(vals))) or 1.0
-        cmin, cmax, scale, unit, fmt = -lim, lim, STRAIN_SCALE, "µε", ".1f"
+        scale, unit, fmt = STRAIN_SCALE, "µε", ".1f"
         bar = "Strain (µε)<br>blue = compression<br>red = tension"
     else:
-        cmin, cmax, scale, unit, fmt = float(np.nanmin(vals)), float(np.nanmax(vals)), VOLT_SCALE, "V", ".4f"
+        scale, unit, fmt = VOLT_SCALE, "V", ".4f"
         bar = "Voltage (V)"
 
     t = pos.index.to_numpy(dtype=float)
     dist = pos["distance_m"].to_numpy(dtype=float)
     extra = np.column_stack([t, dist])
+    shown = first_map_gauge(cols, suffix, df)
     fig = go.Figure()
     # GPS path underneath (all fixes, including where strain has no position)
     gx_lat, gx_lon = info.get("track_latlon", (None, None))
@@ -266,8 +331,9 @@ def track_map(df, info, suffix, title, notes):
                                     name="GPS path", hoverinfo="skip", showlegend=False))
     for i, (col, name) in enumerate(zip(cols, names)):
         fig.add_trace(go.Scattermap(
-            lat=pos["latitude"], lon=pos["longitude"], mode="markers", name=name, visible=(i == 0), showlegend=False,
-            marker=dict(size=7, color=pos[col], colorscale=scale, cmin=cmin, cmax=cmax,
+            lat=pos["latitude"], lon=pos["longitude"], mode="markers", name=name, visible=(i == shown),
+            showlegend=False,
+            marker=dict(size=MARKER_SIZE, color=pos[col], colorscale=scale, cmin=cmin, cmax=cmax,
                         colorbar=dict(title=dict(text=bar), thickness=14)),
             customdata=extra,
             hovertemplate=(f"<b>{name}</b>: %{{marker.color:{fmt}}} {unit}<br>t = %{{customdata[0]:.3f}} s"
@@ -279,14 +345,37 @@ def track_map(df, info, suffix, title, notes):
                                 {"title.text": f"{title} - {name}"}])
                      for i, name in enumerate(names)]
     lat0, lon0 = info["origin"]
+    layers = [dict(below="traces", sourcetype="raster", source=[SATELLITE],
+                   sourceattribution=SATELLITE_CREDIT)] if BASEMAP == "satellite" else []
     fig.update_layout(
-        map=dict(style="white-bg", center=dict(lat=lat0, lon=lon0), zoom=_fit_zoom(gx_lat, gx_lon, pos),
-                 layers=[dict(below="traces", sourcetype="raster", source=[SATELLITE],
-                              sourceattribution=SATELLITE_CREDIT)]),
-        updatemenus=[dict(type="buttons", direction="right", buttons=gauge_buttons, x=0, y=1.01,
+        map=dict(style="white-bg", center=dict(lat=lat0, lon=lon0),
+                 zoom=MAP_ZOOM if MAP_ZOOM is not None else _fit_zoom(gx_lat, gx_lon, pos), layers=layers),
+        updatemenus=[dict(type="buttons", direction="right", buttons=gauge_buttons, x=0, y=1.01, active=shown,
                           xanchor="left", yanchor="bottom", showactive=True)])
-    _layout(fig, f"{title} - {names[0]}", notes, height=820, top=150)
+    if BASEMAP != "satellite" and gx_lat is not None:
+        fig.data[0].line.color = "#9a9890"  # white path would vanish on a plain background
+    _layout(fig, f"{title} - {names[shown]}", notes, height=MAP_HEIGHT, top=150)
     return fig
+
+
+def first_map_gauge(cols, suffix, df):
+    """Index into cols of the gauge shown first (MAP_GAUGE if it's plotted, else the first)."""
+    all_cols = [c for c in df.columns if c.endswith(suffix)]
+    want = all_cols[MAP_GAUGE - 1] if MAP_GAUGE - 1 < len(all_cols) else None
+    return cols.index(want) if want in cols else 0
+
+
+def map_limits(vals, strain):
+    """Colour scale (min, max): MAP_RANGE, else ±largest strain, else the voltage range."""
+    if MAP_RANGE is not None:
+        return MAP_RANGE
+    if not np.isfinite(vals).any():
+        return (-1.0, 1.0) if strain else (0.0, 3.3)
+    if strain:
+        lim = float(np.nanmax(np.abs(vals))) or 1.0
+        return -lim, lim
+    lo, hi = float(np.nanmin(vals)), float(np.nanmax(vals))
+    return (lo, hi) if hi > lo else (lo - 0.01, hi + 0.01)
 
 
 def _fit_zoom(lat, lon, pos, width_px=1100, height_px=620):

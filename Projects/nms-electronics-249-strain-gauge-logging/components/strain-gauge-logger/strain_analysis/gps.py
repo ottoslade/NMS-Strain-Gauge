@@ -4,6 +4,7 @@ Combine a strain log with a GPS track: where on the track was each sample?
     python gps.py strain_logs/1_raw_blf/x.blf strain_logs/1_raw_gps/x.csv
     python gps.py x.blf track.csv --offset -2.5     # GPS clock 2.5 s ahead of the logger
     python gps.py x.blf track.csv --volts          # map raw voltage instead of strain
+    python gps.py x.blf track.csv --smooth 50ms --map-range 600 --gauges 1,2   # see --help for more
 
 Saves strain_logs/6_strain_gps_csv/<name>_strain_gps.csv (strain plus position
 for every sample) and strain_logs/7_strain_maps/<name>.png (track map per gauge,
@@ -39,6 +40,7 @@ import os
 
 import numpy as np
 
+import options
 import read_blf
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -231,43 +233,52 @@ def merge(log, gps, values, columns, offset=0.0, max_gap=None):
 
 
 def plot_map(df, info, title, out_path, suffix="_ue", settings=None):
-    """Six track maps, one per gauge, points coloured by value at that spot (PNG).
+    """A track map per gauge (all six, or web_plots.GAUGES_SHOWN), points coloured
+    by value at that spot, saved as an image to out_path unless it is None.
     Returns the interactive satellite map as a Plotly figure (see web_plots)."""
+    import plot_strain
     import web_plots
     notes = [n for n in (settings, f"GPS: {info['alignment']}",
-                         f"{info['coverage'] * 100:.0f}% of samples have a position") if n]
+                         f"{info['coverage'] * 100:.0f}% of samples have a position",
+                         web_plots.time_range_note()) if n]
     web_fig = web_plots.track_map(df, info, suffix, title, notes)
+    if out_path is None or not plot_strain.SAVE_IMAGES:
+        return web_fig
     import matplotlib.pyplot as plt
     from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm, Normalize
 
     from plot_strain import GRID, SURFACE, TEXT, TEXT_2
 
     strain = suffix == "_ue"
-    cols = [c for c in df.columns if c.endswith(suffix)]
-    pos = df.dropna(subset=["x_m", "y_m"])
-    stride = max(1, len(pos) // 20000)  # keep scatter plots light on long logs
+    cols = web_plots.gauge_columns(df, suffix)
+    pos = web_plots.crop(df).dropna(subset=["x_m", "y_m"])
+    stride = max(1, len(pos) // min(20000, web_plots.MAX_MAP_POINTS))  # keep scatter plots light on long logs
     pos = pos.iloc[::stride]
 
+    lo, hi = web_plots.map_limits(pos[cols].to_numpy(dtype=float), strain)
     if strain:  # diverging: compression blue, neutral grey at zero, tension red
         cmap = LinearSegmentedColormap.from_list(
             "strain", ["#104281", "#3987e5", "#9ec5f4", "#f0efec", "#f2a6a5", "#e34948", "#9c2827"])
-        lim = float(np.nanmax(np.abs(pos[cols].to_numpy()))) or 1.0
-        norm = TwoSlopeNorm(vcenter=0.0, vmin=-lim, vmax=lim)
+        norm = TwoSlopeNorm(vcenter=0.0, vmin=lo, vmax=hi) if lo < 0 < hi else Normalize(vmin=lo, vmax=hi)
         label = "Strain (µε)   blue = compression, red = tension"
     else:       # sequential: low light, high dark blue
         cmap = LinearSegmentedColormap.from_list("volts", ["#cde2fb", "#6da7ec", "#2a78d6", "#184f95", "#0d366b"])
-        vals = pos[cols].to_numpy()
-        norm = Normalize(vmin=float(np.nanmin(vals)), vmax=float(np.nanmax(vals)))
+        norm = Normalize(vmin=lo, vmax=hi)
         label = "Voltage (V)"
 
     plt.rcParams.update({"font.size": 10, "text.color": TEXT, "axes.labelcolor": TEXT_2,
                          "xtick.color": TEXT_2, "ytick.color": TEXT_2, "axes.edgecolor": GRID,
                          "axes.facecolor": SURFACE, "figure.facecolor": SURFACE})
-    fig, axes = plt.subplots(3, 2, figsize=(12, 11), sharex=True, sharey=True)
+    nrows, ncols = web_plots.grid_shape(len(cols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=plot_strain.MAP_FIG_SIZE, sharex=True, sharey=True,
+                             squeeze=False)
     gx, gy = info["track_xy"]
+    for ax in axes.flat[len(cols):]:
+        ax.set_visible(False)
     for ax, col in zip(axes.flat, cols):
         ax.plot(gx, gy, color="#c3c2b7", linewidth=0.8, zorder=1)  # GPS path
-        sc = ax.scatter(pos["x_m"], pos["y_m"], c=pos[col], cmap=cmap, norm=norm, s=6, linewidths=0, zorder=2)
+        sc = ax.scatter(pos["x_m"], pos["y_m"], c=pos[col], cmap=cmap, norm=norm,
+                        s=6 * (web_plots.MARKER_SIZE / 7) ** 2, linewidths=0, zorder=2)
         ax.set_title(col.removesuffix(suffix).replace("gauge", "Gauge "), loc="left", fontsize=11, color=TEXT)
         ax.set_aspect("equal")
         ax.grid(True, color=GRID, linewidth=0.6)
@@ -275,22 +286,21 @@ def plot_map(df, info, title, out_path, suffix="_ue", settings=None):
         for side in ("top", "right"):
             ax.spines[side].set_visible(False)
         ax.tick_params(length=0)
-    for ax in axes[-1, :]:
-        ax.set_xlabel("East (m)")
+    for r, c in web_plots.bottom_cells(len(cols), ncols):
+        axes[r, c].set_xlabel("East (m)")
+        axes[r, c].xaxis.set_tick_params(labelbottom=True)
     for ax in axes[:, 0]:
         ax.set_ylabel("North (m)")
 
-    notes = [n for n in (settings,
-                         f"GPS: {info['alignment']}",
-                         f"{info['coverage'] * 100:.0f}% of samples have a position") if n]
-    fig.tight_layout(rect=(0, 0.075, 1, 0.94))
+    note_lines = plot_strain.wrap_notes(notes)
+    fig.tight_layout(rect=(0, 0.075, 1, 0.96 - 0.02 * len(note_lines)))
     fig.suptitle(title, x=0.01, y=0.99, ha="left", va="top", fontsize=13, color=TEXT)
-    fig.text(0.01, 0.955, "    ·    ".join(notes), fontsize=9, color=TEXT_2, va="top")
+    fig.text(0.01, 0.955, "\n".join(note_lines), fontsize=9, color=TEXT_2, va="top", linespacing=1.5)
     cax = fig.add_axes((0.25, 0.045, 0.5, 0.012))
     cb = fig.colorbar(sc, cax=cax, orientation="horizontal")
     cb.set_label(label, color=TEXT_2)
     cb.outline.set_visible(False)
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=plot_strain.DPI)
     plt.close(fig)
     return web_fig
 
@@ -307,15 +317,20 @@ def main():
     p = argparse.ArgumentParser(description="Combine a strain log with a GPS track.")
     p.add_argument("log", help=".blf strain log")
     p.add_argument("gps", nargs="?", help="GPS CSV (default: strain_logs/1_raw_gps/<log name>.csv)")
-    p.add_argument("--offset", type=float, default=0.0,
-                   help="seconds to add to GPS times (positive = GPS later); default 0")
-    p.add_argument("--max-gap", type=float, help="longest GPS gap to interpolate across, seconds")
     p.add_argument("--volts", action="store_true", help="map raw voltage instead of strain")
     p.add_argument("--show", action="store_true",
                    help="also open the interactive map in the browser")
-    args = p.parse_args()
-    matplotlib.use("Agg")  # PNG drawn off-screen; the interactive map is HTML
+    p.add_argument("--title", help="map title (default '<Strain|Voltage> around the track - <name>')")
+    options.add_map_options(p, offset_alias=True)
+    options.add_plot_options(p)
+    options.add_smoothing_options(p)
+    options.add_strain_options(p)
+    options.add_read_options(p)
+    options.add_output_options(p)
+    args = options.parse(p)
+    matplotlib.use("Agg")  # image drawn off-screen; the interactive map is HTML
 
+    import plot_strain
     import strain
     log = read_blf.read_log(args.log)
     if not log:
@@ -331,7 +346,7 @@ def main():
     else:
         values = strain.volts_to_strain(log.t, log.gauges)[0]
         cols, suffix = [f"{g['name']}_ue" for g in strain.GAUGES], "_ue"
-    df, info = merge(log, gps, values, cols, args.offset, args.max_gap)
+    df, info = merge(log, gps, values, cols, args.gps_offset, args.max_gap)
     print(f"Alignment: {info['alignment']}")
     print(f"Coverage: {info['coverage'] * 100:.1f}% of strain samples have a position "
           f"(no interpolation across GPS gaps over {info['max_gap']:.2f} s)")
@@ -341,13 +356,23 @@ def main():
     os.makedirs(MAP_DIR, exist_ok=True)
     csv_out = os.path.join(GPS_CSV_DIR, f"{stem}_{'volts' if args.volts else 'strain'}_gps.csv")
     df.to_csv(csv_out, float_format="%.7g")
-    map_out = os.path.join(MAP_DIR, f"{stem}{'_volts' if args.volts else ''}.png")
+    name = f"{stem}{'_volts' if args.volts else ''}"
+    map_out = plot_strain.image_path(MAP_DIR, name)
     what = "Voltage" if args.volts else "Strain"
-    web_fig = plot_map(df, info, f"{what} around the track - {stem}", map_out, suffix,
-                       settings=read_blf.short_settings(log))
+    label = read_blf.short_settings(log)
+    map_df = df
+    if args.smooth:  # colours from smoothed values; the CSV keeps the logged ones
+        import smoothing
+        map_df = df.copy()
+        sm, n = smoothing.smooth(log.t, [df[c].to_numpy() for c in cols], args.smooth, log.sample_period_s)
+        for c, v in zip(cols, sm):
+            map_df[c] = v
+        label += "  ·  " + smoothing.describe(args.smooth, n, log.sample_period_s)
+    web_fig = plot_map(map_df, info, args.title or f"{what} around the track - {stem}", map_out, suffix,
+                       settings=label)
     import web_plots
-    html = web_plots.save_page(web_fig, os.path.splitext(map_out)[0] + ".html")
-    print(f"Saved {csv_out}\nSaved {map_out}\nSaved {html}")
+    html = web_plots.save_page(web_fig, os.path.join(MAP_DIR, name + ".html"))
+    print(f"Saved {csv_out}" + (f"\nSaved {map_out}" if map_out else "") + f"\nSaved {html}")
     if args.show:
         import web_plots
         web_plots.open_in_browser([html])

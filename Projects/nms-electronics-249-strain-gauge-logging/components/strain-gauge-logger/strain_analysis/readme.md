@@ -50,6 +50,7 @@ Cylinders are data folders under `strain_logs/`, rectangles are plots, and edge 
 - [Requirements](#requirements)
 - [Folder Structure](#folder-structure)
 - [Quick Start](#quick-start)
+- [Command-Line Options](#command-line-options)
 - [Scripts](#scripts)
   - [read_blf.py](#read_blfpy)
   - [fake_blf.py](#fake_blfpy)
@@ -84,7 +85,8 @@ strain_analysis/
 ├── plot_strain.py       Plot strain (or, with --volts, voltage) over time, one panel per gauge
 ├── fake_gps.py          Generate a dummy GPS track CSV with irregular fix timing
 ├── gps.py               Combine a strain log with a GPS track; track maps per gauge
-├── smoothing.py         PC-side smoothing (centred moving average) for plots and reports
+├── smoothing.py         PC-side smoothing (centred mean, median or Gaussian) for plots and reports
+├── options.py           Command-line options shared by the scripts, and --config files
 ├── web_plots.py         Interactive HTML plots (Plotly): hover readings, zoom, pan; satellite track map; tabbed report page
 ├── pipeline.py          Whole pipeline on one .blf (+ GPS if present), with a PASS / WARN / FAIL summary
 ├── fw_check/            PC build of the firmware's BLF writer, used by check_blf.py
@@ -127,13 +129,15 @@ python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf --plot voltage
 python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf --plot strain    # strain only
 python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf --gps track.csv  # add GPS track maps
 python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf --smooth 20ms    # smooth the plots (CSVs unchanged)
+python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf --gauges 1,2 --start 10 --end 25   # two gauges, 10-25 s
+python pipeline.py --help                                                          # every option
 ```
 
-If `strain_logs/1_raw_gps/<log name>.csv` exists, the pipeline adds a `gps map` step automatically (`--no-gps` skips it). See [gps.py](#gpspy).
+If `strain_logs/1_raw_gps/<log name>.csv` exists, the pipeline adds a `gps map` step automatically (`--no-gps` skips it). See [gps.py](#gpspy). Almost everything else can be changed from the command line too: see [Command-Line Options](#command-line-options).
 
 ```
 == Summary: strain_gauge_log_example.blf
-  PASS  read_blf      9984 samples, 9.984 s, 1000 Hz, 8-scan smoothing (0.48 ms) -> strain_logs\2_voltage_csv\strain_gauge_log_example.csv
+  PASS  read_blf      9984 samples, 9.984 s, 1000 Hz, 16-scan board average (0.96 ms) -> strain_logs\2_voltage_csv\strain_gauge_log_example.csv
   PASS  check_blf     1,437,920 bytes identical
   PASS  voltage plot  strain_logs\3_voltage_plots\strain_gauge_log_example.png
   WARN  strain        placeholder hardware constants (strain_logs\4_strain_csv\strain_gauge_log_example_strain.csv)
@@ -170,6 +174,121 @@ python fake_blf.py
 python read_blf.py strain_logs/1_raw_blf
 ```
 
+## Command-Line Options
+
+Every script takes options to change how it works for one run, without editing any code. `pipeline.py` accepts all of them, and the individual scripts accept the ones that apply to them. `python <script>.py --help` lists every option a script has, grouped as below. The options are defined once, in `options.py`, so they mean the same thing in every script.
+
+```bash
+python pipeline.py log.blf --gain 200 --gauge-factor 2.12 --bridge half_bending   # real hardware values
+python pipeline.py log.blf --gauges 1,2 --columns 1 --start 10 --end 25           # two gauges, 10-25 s, stacked
+python pipeline.py log.blf --smooth 50ms --smooth-method median                   # median smoothing
+python pipeline.py log.blf --strain-range 800 --map-range 600 --image-format svg  # fixed scales, SVG images
+python pipeline.py log.blf --plot none --no-check --out-root D:/runs/day1         # CSVs only, elsewhere
+```
+
+**Config files.** `--save-config FILE.json` saves the options in use, and `--config FILE.json` loads them again. Options on the command line override the file. This is the easy way to keep the car's real hardware constants, or a standard set of plots, and use them for every log:
+
+```bash
+python pipeline.py log.blf --gain 200 --gauge-names FL_up,FL_lo,FR_up,FR_lo,R_l,R_r --save-config car.json
+python pipeline.py next_log.blf --config car.json
+python pipeline.py next_log.blf --config car.json --smooth 20ms    # file + one more option
+```
+
+A config file is a JSON object of option names and values, written the same way as on the command line: `{"gain": "200", "smooth": "20ms", "no-show": true}`. Unknown names are an error, so typos don't go unnoticed. The pipeline summary starts with an `options` line listing every option in use, so each run records how it was made.
+
+**Per-gauge values.** Strain options can be given in three ways:
+
+| Form | Example | Meaning |
+|---|---|---|
+| One value | `--gain 200` | All six gauges |
+| Six values | `--gain 200,200,100,100,200,200` | One per gauge, in order |
+| Pairs | `--gain 3=100,4=100` | Only the gauges named; the others keep their setting |
+
+A value that starts with `-` needs `=` after the option name, for example `--polarity=-1,1,1,1,1,1` or `--strain-range=-500,800`.
+
+### Steps (pipeline.py)
+
+| Option | Effect |
+|---|---|
+| `--plot both\|voltage\|strain\|none` | Which plots to make. `voltage` skips the strain steps; `none` only writes the CSVs. |
+| `--gps FILE`, `--no-gps` | Use this GPS track, or skip the GPS step even if a track was found. |
+| `--no-check` | Skip the byte comparison with the firmware (`check_blf`). |
+| `--no-csv` | Don't write any CSVs. |
+| `--no-report` | Don't make the interactive report page. |
+| `--no-show` | Save the report but don't open it. |
+| `--fail-on-warn` | Exit with code 1 on warnings too, not just failures (for scripts that check logs automatically). |
+| `--name NAME` | Base name for every output file, instead of the log's name. |
+| `--report-title TEXT` | Title at the top of the report page. |
+
+### Strain conversion
+
+Accepted by `pipeline.py`, `strain.py`, `plot_strain.py` and `gps.py`. They override the constants at the top of `strain.py` (see [strain.py](#strainpy)) for this run.
+
+| Option | Per gauge | Effect |
+|---|---|---|
+| `--bridge TYPE` | yes | `quarter`, `half_bending`, `half_poisson`, `full_bending` or `full_poisson` |
+| `--gauge-factor GF` | yes | Gauge factor from the gauge datasheet |
+| `--excitation V` | yes | Bridge excitation voltage |
+| `--gain G` | yes | Amplifier gain (V/V) |
+| `--zero-v V` | yes | ADC voltage at zero strain, or `auto` to average the start of each log |
+| `--polarity ±1` | yes | `-1` flips a gauge so tension reads positive |
+| `--lead-ohms`, `--gauge-ohms` | yes | Quarter bridge only: lead wire and gauge resistance |
+| `--gauge-names N1,...,N6` | | Names used in the CSV headers and plot titles |
+| `--poisson NU` | | Poisson's ratio for the `*_poisson` bridges |
+| `--zero-window S`, `--zero-start S` | | Automatic zeroing averages `--zero-window` seconds (default 0.5) starting `--zero-start` seconds into the log (default 0). Use them when the part isn't unloaded right at the start. |
+| `--clip-low V`, `--clip-high V` | | Readings at or beyond these count as clipped (defaults 0.01 and 3.29 V) |
+| `--constants-verified` | | The values given are the real hardware: drop the placeholder warning |
+
+### What's shown, and how it looks
+
+Accepted by `pipeline.py`, `plot_strain.py` and `gps.py`. They change only the plots, maps and report: the CSVs always cover the whole log at full resolution.
+
+| Option | Default | Effect |
+|---|---|---|
+| `--gauges LIST` | all | Which gauges to plot and map, e.g. `1,2`, `1-4` or `2,4-6` |
+| `--start S`, `--end S` | whole log | Time window shown, in seconds |
+| `--smooth WINDOW` | off | Smooth over this window, e.g. `20ms` (see [Smoothing on the PC](#smoothing-on-the-pc)) |
+| `--smooth-method` | `mean` | `mean`, `median` or `gaussian` |
+| `--columns N` | `2` | Panels per row |
+| `--independent-y` | off | Give each panel its own y scale, instead of one shared scale |
+| `--strain-range MIN,MAX` | automatic | Fixed strain axis in µε; one number `X` means `-X` to `X` |
+| `--volt-range MIN,MAX` | automatic | Fixed voltage axis |
+| `--no-zero-line` | off | Leave out the zero line on strain plots |
+| `--line-color`, `--raw-color` | blue, light grey | Line colour, and the colour of the logged data under a smoothed line. A name (`darkred`) or hex (`#2a78d6`). |
+| `--line-width PX` | `1` | Line width |
+| `--plot-height PX` | about 280 per row | Height of the interactive time plots |
+| `--max-points N` | `200000` | Points per gauge in the interactive plots before the display is thinned |
+| `--no-images` | off | Don't save image files, only the interactive pages |
+| `--image-format` | `png` | `png`, `svg`, `pdf` or `jpg` |
+| `--dpi N`, `--image-size WxH` | `150`, `12x8` | Image resolution, and size in inches |
+
+### GPS and track map
+
+Accepted by `pipeline.py` and `gps.py`.
+
+| Option | Default | Effect |
+|---|---|---|
+| `--gps-offset S` | `0` | Seconds added to the GPS times (positive = GPS later). `--offset` in `gps.py`. |
+| `--max-gap S` | 3× the fix interval, at least 0.5 s | Longest GPS gap to interpolate positions across |
+| `--map-gauge N` | `1` | Gauge shown first on the interactive map |
+| `--map-range MIN,MAX` | strain ±largest reading; volts min-max | Fixed colour scale, so maps of different logs compare directly |
+| `--marker-size PX` | `7` | Point size |
+| `--map-points N` | `50000` | Points per gauge on the map |
+| `--map-zoom Z` | fit the track | Zoom level, 1 (world) to 20 (street) |
+| `--map-height PX` | `820` | Interactive map height |
+| `--basemap satellite\|none` | `satellite` | `none` draws the track on a plain background, which works offline |
+
+### Reading the log, and output files
+
+| Option | Scripts | Effect |
+|---|---|---|
+| `--period-ms MS` | all but the fake generators | Use this sample period instead of the one in the log. Only for logs whose config record and timestamps are both wrong; gaps are then found with this period. |
+| `--time-from-zero` | same | Shift times so the first sample is at 0 s. Logs opened after re-inserting the card start later, because the firmware's clock counts from boot. |
+| `--out-root DIR` | same | Put every output in `DIR/2_voltage_csv`, `DIR/3_voltage_plots`, ... instead of `strain_logs/`. |
+| `--volt-decimals N`, `--strain-decimals N` | same | Decimal places in the CSVs (defaults 6 and 2). |
+
+`fake_blf.py` and `fake_gps.py` have their own options (see their sections), and also take `--config` and `--save-config`, so a test case can be saved and remade exactly.
+
 ## Scripts
 
 ### read_blf.py
@@ -193,6 +312,9 @@ python read_blf.py strain_logs/1_raw_blf --all --no-csv   # summaries only
 | `--copy` | Copy the logs into `strain_logs/1_raw_blf/`. Files already copied are skipped. |
 | `--csv PATH` | Save the CSV here instead of `strain_logs/2_voltage_csv/` (single file only). |
 | `--no-csv` | Don't save CSVs. |
+| `--dest DIR` | With `--copy`: copy into this folder instead. |
+| `--max-gaps N` | How many gaps to list per log (default 5). |
+| `--period-ms`, `--time-from-zero`, `--out-root`, `--volt-decimals` | See [Command-Line Options](#reading-the-log-and-output-files). |
 
 Example output:
 
@@ -206,7 +328,7 @@ strain_gauge_log_2026-10-06_23-09-25.blf: 9984 samples, 9.984 s, started 2026-10
     saved ...\strain_logs\2_voltage_csv\strain_gauge_log_2026-10-06_23-09-25.csv
 ```
 
-The second line shows the logger's [settings](#logger-settings), read from the config record at the start of the log. Logs from firmware older than the config record show `inferred from timestamps` for the rate and `smoothing unknown`.
+The second line shows the logger's [settings](#logger-settings), read from the config record at the start of the log. Logs from firmware older than the config record show `inferred from timestamps` for the rate and `board averaging unknown`.
 
 Problems are listed under the summary, such as `file ends mid-message (power cut?)`, `incomplete samples dropped`, or `start year may read too high (firmware RTC bug)`. Empty logs are reported and get no CSV.
 
@@ -231,6 +353,8 @@ python fake_blf.py                                  # 10 s log, named with the c
 python fake_blf.py -d 60 --csv truth.csv               # also save the noise-free signal
 python fake_blf.py --start 2026-10-06T14:30:00 --seed 3
 python fake_blf.py --period-ms 5 --avg 32                # like firmware built with those settings
+python fake_blf.py --vib-hz 120 --vib-v 0.05             # change the simulated signal
+python fake_blf.py --drop 2.5:0.2 --drop 6:0.05          # SD card stalls: gaps at 2.5 s and 6 s
 ```
 
 | Option | Default | Effect |
@@ -246,8 +370,14 @@ python fake_blf.py --period-ms 5 --avg 32                # like firmware built w
 | `--noise` | `0.004` | ADC noise standard deviation, in volts. |
 | `--seed` | `0` | Random seed. The same settings always produce the same file. |
 | `--csv` | none | Also save the noise-free signal, as ground truth for testing your filtering. |
+| `--drop T:S` | none | Leave out `S` seconds of samples from `T` seconds, like an SD card stall. Repeat for more gaps. Whole 32-sample batches are dropped, as on the real board, and the timestamps jump. |
+| `--offset-v`, `--spread-v` | `1.65`, `0.03` | Mid-rail output, and the offset step between neighbouring gauges. |
+| `--load-v`, `--load-hz` | `0.25`, `1.2` | Slow load swing: amplitude, and frequency for gauges 1-2 (+0.4 Hz per pair after). |
+| `--vib-v`, `--vib-hz` | `0.02`, `35` | Vibration: amplitude, and frequency for gauges 1-2 (+5 Hz per pair after). |
+| `--bump-v`, `--bump-every`, `--bump-at`, `--bump-length` | `0.4`, `4`, `1`, `0.25` | Bump: size for gauges 1-2 (0.1 V less per pair), seconds between bumps, start within each period, duration. |
+| `--config`, `--save-config` | | Read or save these options as JSON, to remake a test log exactly. |
 
-The simulated signal is a 1.65 V bridge output with a slow load swing, 35-45 Hz vibration and a bump every 4 s. In each pair (1-2, 3-4, 5-6) the two gauges move in opposite directions, like tension and compression. The ADC is simulated scan by scan, like the firmware's `get_adc_voltage()`. Each logged value is the average of `--avg` 12-bit readings taken 60 µs apart, ending at the sample time, computed in single precision exactly as the firmware does. So the values have the real ADC step size (about 0.8 mV) and real smoothing behaviour, including its lag (see [Logger Settings](#logger-settings)).
+By default the simulated signal is a 1.65 V bridge output with a slow load swing, 35-45 Hz vibration and a bump every 4 s; the signal options above change each part. In each pair (1-2, 3-4, 5-6) the two gauges move in opposite directions, like tension and compression. The ADC is simulated scan by scan, like the firmware's `get_adc_voltage()`. Each logged value is the average of `--avg` 12-bit readings taken 60 µs apart, ending at the sample time, computed in single precision exactly as the firmware does. So the values have the real ADC step size (about 0.8 mV) and real smoothing behaviour, including its lag (see [Logger Settings](#logger-settings)).
 
 ### check_blf.py
 
@@ -298,7 +428,15 @@ Values are microstrain (µε, 1e-6 m/m), with tension positive. For each gauge, 
 | `polarity` | `+1` | Flip to `-1` if tension reads negative for how a gauge is wired |
 | `lead_ohms`, `gauge_ohms` | `0.0`, `350.0` | Quarter bridge only: lead wire resistance and gauge resistance |
 
-There are also shared settings: `POISSON_RATIO` (`0.3`, for the Poisson bridges), `ZERO_WINDOW_S`, and the clipping thresholds `ADC_MIN_V` and `ADC_MAX_V`.
+There are also shared settings: `POISSON_RATIO` (`0.3`, for the Poisson bridges), `ZERO_WINDOW_S` and `ZERO_START_S` (where automatic zeroing looks), and the clipping thresholds `ADC_MIN_V` and `ADC_MAX_V`.
+
+**Every constant can also be set from the command line** for one run, for all gauges or per gauge, and kept in a config file. See [Strain conversion options](#strain-conversion):
+
+```bash
+python strain.py x.csv --bridge half_bending --gain 200 --gauge-factor 3=2.12,4=2.12
+python strain.py x.csv --zero-start 2 --zero-window 1        # zero on 2-3 s instead of 0-0.5 s
+python strain.py x.csv --zero-v 1.651,1.648,auto,auto,auto,auto
+```
 
 The conversion is `V_bridge = (V_adc − zero_v) / amp_gain`, then `Vr = V_bridge / excitation_v`, then the standard (NI) bridge equation for the bridge type. That includes the nonlinear terms, so large strains stay accurate. Each equation was checked by simulating a bridge at ±1,500 µε and 20,000 µε and confirming the original strain comes back exactly.
 
@@ -314,7 +452,7 @@ ue[2][100]   # gauge 3 at t[100], in microstrain
 
 ### plot_strain.py
 
-Plots strain over time for each gauge and saves a PNG to `strain_logs/5_strain_plots/`. With `--volts` it plots the logged voltages instead and saves to `strain_logs/3_voltage_plots/`. There is one panel per gauge, laid out in pairs (1-2, 3-4, 5-6), and all panels share the same axes, so heights compare directly.
+Plots strain over time for each gauge and saves a PNG to `strain_logs/5_strain_plots/`. With `--volts` it plots the logged voltages instead and saves to `strain_logs/3_voltage_plots/`. There is one panel per gauge, laid out in pairs (1-2, 3-4, 5-6), and all panels share the same axes, so heights compare directly. `--gauges`, `--columns` and `--independent-y` change that; see [What's shown, and how it looks](#whats-shown-and-how-it-looks) for every plot option.
 
 ```bash
 python plot_strain.py strain_logs/4_strain_csv/*_strain.csv                        # every strain CSV
@@ -329,6 +467,8 @@ python plot_strain.py strain_logs/2_voltage_csv/*.csv --volts                   
 | `--start`, `--end` | Plot only this time window, in seconds. Zoomed plots are saved as `<name>_<start>-<end>s.png`. |
 | `--show` | Also open the interactive pages in the browser (hover for readings, scroll to zoom; see [Quick Start](#quick-start)). |
 | `-o DIR` | Save somewhere else. |
+| `--title TEXT` | Plot title. |
+| `--smooth`, `--gauges`, `--strain-range`, `--image-format`, ... | See [Command-Line Options](#command-line-options). With `.blf` or volts input, the strain conversion options apply too. |
 
 For strain plots it also accepts volts CSVs or `.blf` logs, converting them with `strain.py` first. While `strain.py` still has placeholder constants, every strain plot carries a note saying the magnitudes are illustrative. Voltage plots have no such note and no zero line, since 0 V isn't a meaningful baseline.
 
@@ -366,6 +506,7 @@ Combines a strain log with a GPS track: it works out where on the track every st
 python gps.py strain_logs/1_raw_blf/<log>.blf                          # uses strain_logs/1_raw_gps/<log>.csv
 python gps.py strain_logs/1_raw_blf/<log>.blf track.csv --offset -2.5  # GPS clock 2.5 s ahead of the logger
 python gps.py strain_logs/1_raw_blf/<log>.blf --volts                  # map raw voltage instead of strain
+python gps.py strain_logs/1_raw_blf/<log>.blf --smooth 50ms --map-range 600 --gauges 1,2   # see Command-Line Options
 ```
 
 **GPS CSV format.** One row per fix, in any order, with any spacing. Column names are matched loosely:
@@ -418,7 +559,7 @@ The average is kept as a fraction, so it resolves finer than one ADC step (0.8 m
 
 ## Smoothing on the PC
 
-`pipeline.py --smooth WINDOW` (also `plot_strain.py --smooth`) smooths the plots, the report and the track map's colours with a **centred moving average** over the given time window, for example `5ms`, `20ms` or `0.05s`. The CSVs always keep the logged values.
+`pipeline.py --smooth WINDOW` (also `plot_strain.py` and `gps.py`) smooths the plots, the report and the track map's colours with a **centred moving average** over the given time window, for example `5ms`, `20ms` or `0.05s`. The CSVs always keep the logged values.
 
 ```bash
 python pipeline.py strain_logs/1_raw_blf/<log>.blf --smooth 20ms
@@ -427,7 +568,8 @@ python pipeline.py strain_logs/1_raw_blf/<log>.blf --smooth 20ms
 - **No lag.** Centred means each point is averaged with as many samples after it as before it, so peaks stay at the right time. The board's average can't do this, because it can only look backwards.
 - **Respects gaps and edges.** It never averages across a gap in the data. Near the ends of the log, or of a gap, the window shrinks rather than inventing samples.
 - **Shows what it did.** The plots draw the smoothed line in blue over the logged data in faint grey, hover shows both, and the subtitle and pipeline summary state the window.
-- **From your own code:** `smoothing.smooth(t, columns, window_s)` returns smoothed copies (see `smoothing.py`).
+- **Three methods** (`--smooth-method`): `mean` (the default), `median`, which removes isolated spikes and keeps sharp steps sharp, and `gaussian`, a weighted average (σ = window/6) with softer edges and no ripple after sudden changes.
+- **From your own code:** `smoothing.smooth(t, columns, window_s, method="median")` returns smoothed copies (see `smoothing.py`).
 
 Choose the window from what you're looking for: a few milliseconds removes noise while keeping vibration, and 50-100 ms or more leaves only the slower load changes, such as cornering and braking.
 
