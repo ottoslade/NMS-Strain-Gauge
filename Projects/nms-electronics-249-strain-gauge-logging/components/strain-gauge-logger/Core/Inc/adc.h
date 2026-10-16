@@ -70,7 +70,8 @@ void adcInit(void);
 
 /**
  * @brief Gets the raw ADC value for a specific channel, averaged over the
- *        last ADC_AVG_SAMPLES scans (see logger_config.h).
+ *        last ADC_AVG_SAMPLES scans (see logger_config.h), rounded to the
+ *        nearest count. get_adc_voltage() keeps the unrounded average.
  *
  * @param channel ADC1 scan rank, starting at 1 (GAUGE1_SENSOR_RANK ... GAUGE6_SENSOR_RANK)
  * @return uint32_t averaged raw ADC count (0-4095), or 0 for an invalid channel
@@ -78,7 +79,8 @@ void adcInit(void);
 uint32_t get_adc_value(int channel);
 
 /**
- * @brief Gets the voltage for a specific ADC channel.
+ * @brief Gets the voltage for a specific ADC channel, from the unrounded
+ *        average of the last ADC_AVG_SAMPLES scans (finer than one ADC step).
  *
  * @param channel ADC1 scan rank, starting at 1 (GAUGE1_SENSOR_RANK ... GAUGE6_SENSOR_RANK)
  * @return float voltage in volts (0-3.3), or 0 for an invalid channel

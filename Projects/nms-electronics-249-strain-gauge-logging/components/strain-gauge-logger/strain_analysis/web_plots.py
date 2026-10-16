@@ -30,6 +30,7 @@ import numpy as np
 MAX_POINTS = 200_000       # per gauge line before the display is thinned
 MAX_MAP_POINTS = 50_000    # per gauge on the track map
 LINE = "#2a78d6"
+RAW_UNDER = "#c3c2b7"  # logged data under a smoothed line
 TEXT, TEXT_2, GRID, SURFACE = "#0b0b0b", "#52514e", "#e6e5e1", "#fcfcfb"
 STRAIN_SCALE = [[0.0, "#104281"], [0.17, "#3987e5"], [0.33, "#9ec5f4"], [0.5, "#f0efec"],
                 [0.67, "#f2a6a5"], [0.83, "#e34948"], [1.0, "#9c2827"]]
@@ -175,8 +176,10 @@ REPORT_TEMPLATE = """<!doctype html>
 """
 
 
-def time_panels(df, suffix, ylabel, title, notes, zero_line):
-    """Six linked panels (one per gauge) over time. Returns the Plotly figure."""
+def time_panels(df, suffix, ylabel, title, notes, zero_line, smoothed=None):
+    """Six linked panels (one per gauge) over time. With smoothed (a DataFrame
+    like df), the logged data is drawn faint grey and the smoothed line blue on
+    top; hover shows both. Returns the Plotly figure."""
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -194,8 +197,7 @@ def time_panels(df, suffix, ylabel, title, notes, zero_line):
 
     fig = make_subplots(rows=3, cols=2, shared_xaxes="all", shared_yaxes="all",
                         subplot_titles=names, vertical_spacing=0.08, horizontal_spacing=0.05)
-    for i, (col, name) in enumerate(zip(cols, names)):
-        y = df[col].to_numpy(dtype=float)
+    def trace_xy(y):
         tt, yy = minmax_thin(t, y, MAX_POINTS)
         tt, yy = _with_gap_breaks(tt, yy, gaps)
         # float32 halves the page size. Times stay exact to 1 ms only below
@@ -203,10 +205,24 @@ def time_panels(df, suffix, ylabel, title, notes, zero_line):
         yy = yy.astype(np.float32)
         if len(tt) and np.nanmax(np.abs(tt)) < 16384:
             tt = tt.astype(np.float32)
+        return tt, yy
+
+    for i, (col, name) in enumerate(zip(cols, names)):
+        tt, yy = trace_xy(df[col].to_numpy(dtype=float))
+        under = smoothed is not None
         fig.add_trace(go.Scattergl(
-            x=tt, y=yy, mode="lines", line=dict(color=LINE, width=1), name=name, showlegend=False,
-            hovertemplate=f"<b>{name}</b><br>t = %{{x:.3f}} s<br>%{{y:{fmt}}} {unit}<extra></extra>"),
+            x=tt, y=yy, mode="lines", line=dict(color=RAW_UNDER if under else LINE, width=1), name=name,
+            showlegend=False,
+            hovertemplate=(f"<b>{name}</b>{' logged' if under else ''}<br>t = %{{x:.3f}} s"
+                           f"<br>%{{y:{fmt}}} {unit}<extra></extra>")),
             row=i // 2 + 1, col=i % 2 + 1)
+        if under:
+            ts, ys = trace_xy(smoothed[col].to_numpy(dtype=float))
+            fig.add_trace(go.Scattergl(
+                x=ts, y=ys, mode="lines", line=dict(color=LINE, width=1.5), name=f"{name} smoothed",
+                showlegend=False,
+                hovertemplate=f"<b>{name}</b> smoothed<br>t = %{{x:.3f}} s<br>%{{y:{fmt}}} {unit}<extra></extra>"),
+                row=i // 2 + 1, col=i % 2 + 1)
     if zero_line:
         fig.add_hline(y=0, line=dict(color="#9a9890", width=1))
     fig.update_xaxes(showgrid=True, gridcolor=GRID, zeroline=False, showspikes=True, spikemode="across",
@@ -288,12 +304,24 @@ def _fit_zoom(lat, lon, pos, width_px=1100, height_px=620):
     return float(np.clip(zoom - 0.5, 1, 18))  # margin around the track; 18 = street level
 
 
+def _wrap(notes, width=170, sep="  ·  "):
+    lines, line = [], ""
+    for n in notes:
+        candidate = n if not line else line + sep + n
+        if line and len(candidate) > width:
+            lines.append(line)
+            line = n
+        else:
+            line = candidate
+    return lines + ([line] if line else [])
+
+
 def _layout(fig, title, notes, height, top=110):
     fig.update_layout(
         title=dict(text=title, x=0.01, xanchor="left", y=0.985, yanchor="top", yref="container",
                    font=dict(size=18, color=TEXT),
-                   subtitle=dict(text="  ·  ".join(notes), font=dict(size=12, color=TEXT_2))),
-        height=height, margin=dict(l=70, r=30, t=top, b=60),
+                   subtitle=dict(text="<br>".join(_wrap(notes)), font=dict(size=12, color=TEXT_2))),
+        height=height, margin=dict(l=70, r=30, t=top + 16 * max(0, len(_wrap(notes)) - 1), b=60),
         paper_bgcolor=SURFACE, plot_bgcolor=SURFACE, font=dict(color=TEXT_2),
         hovermode="closest", dragmode="zoom",
         hoverlabel=dict(bgcolor="white", font_size=13))

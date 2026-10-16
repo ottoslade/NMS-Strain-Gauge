@@ -59,6 +59,7 @@ Cylinders are data folders under `strain_logs/`, rectangles are plots, and edge 
   - [fake_gps.py](#fake_gpspy)
   - [gps.py](#gpspy)
 - [Logger Settings](#logger-settings)
+- [Smoothing on the PC](#smoothing-on-the-pc)
 - [Using the Data in Python](#using-the-data-in-python)
 - [File Formats](#file-formats)
 - [Firmware Quirks](#firmware-quirks)
@@ -83,6 +84,7 @@ strain_analysis/
 ├── plot_strain.py       Plot strain (or, with --volts, voltage) over time, one panel per gauge
 ├── fake_gps.py          Generate a dummy GPS track CSV with irregular fix timing
 ├── gps.py               Combine a strain log with a GPS track; track maps per gauge
+├── smoothing.py         PC-side smoothing (centred moving average) for plots and reports
 ├── web_plots.py         Interactive HTML plots (Plotly): hover readings, zoom, pan; satellite track map; tabbed report page
 ├── pipeline.py          Whole pipeline on one .blf (+ GPS if present), with a PASS / WARN / FAIL summary
 ├── fw_check/            PC build of the firmware's BLF writer, used by check_blf.py
@@ -124,6 +126,7 @@ python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf               
 python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf --plot voltage   # voltage only
 python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf --plot strain    # strain only
 python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf --gps track.csv  # add GPS track maps
+python pipeline.py strain_logs/1_raw_blf/strain_gauge_log_000.blf --smooth 20ms    # smooth the plots (CSVs unchanged)
 ```
 
 If `strain_logs/1_raw_gps/<log name>.csv` exists, the pipeline adds a `gps map` step automatically (`--no-gps` skips it). See [gps.py](#gpspy).
@@ -195,7 +198,7 @@ Example output:
 
 ```
 strain_gauge_log_2026-10-06_23-09-25.blf: 9984 samples, 9.984 s, started 2026-10-06 23:09:25
-    sampling 1000 Hz (1 ms), config record and timestamps agree; smoothing 8 ADC scan(s) = 0.48 ms
+    sampling 1000 Hz (1 ms), config record and timestamps agree; board anti-alias average 8 ADC scan(s) = 0.48 ms
     no gaps: every sample present
     gauge 1: min 1.3023 V  max 2.2040 V  mean 1.5938 V
     ...
@@ -234,8 +237,8 @@ python fake_blf.py --period-ms 5 --avg 32                # like firmware built w
 |---|---|---|
 | `-d`, `--duration` | `10` | Seconds of data. Rounded down to whole 32-sample batches, as the firmware writes. |
 | `--period-ms` | `1` | Sample period in whole ms, like `LOG_SAMPLE_PERIOD_MS` in the firmware. |
-| `--avg` | `8` | ADC scans averaged per reading, like `ADC_AVG_SAMPLES` in the firmware. |
-| `--legacy` | off | Leave out the config record, like firmware from before the settings were configurable. |
+| `--avg` | one sample period (16 at 1 ms) | ADC scans averaged per reading, like `ADC_AVG_SAMPLES` in the firmware. |
+| `--legacy` | off | Make a log like firmware from before the settings were configurable: no config record, 8 scans, average rounded down to a whole ADC step. |
 | `-o`, `--out` | `strain_logs/1_raw_blf/strain_gauge_log_<date>_<time>.blf` | Output path. If the name is taken, `_2`, `_3`, ... is added. |
 | `--start` | now | Start time written to the header (ISO format). |
 | `--no-rtc` | off | Write the header as if the logger never received the time from the TCU. |
@@ -244,7 +247,7 @@ python fake_blf.py --period-ms 5 --avg 32                # like firmware built w
 | `--seed` | `0` | Random seed. The same settings always produce the same file. |
 | `--csv` | none | Also save the noise-free signal, as ground truth for testing your filtering. |
 
-The simulated signal is a 1.65 V bridge output with a slow load swing, 35-45 Hz vibration and a bump every 4 s. In each pair (1-2, 3-4, 5-6) the two gauges move in opposite directions, like tension and compression. The ADC is simulated scan by scan, like the firmware's `get_adc_voltage()`. Each logged value is the integer average of `--avg` 12-bit readings taken 60 µs apart, ending at the sample time. So the values have the real ADC step size (about 0.8 mV) and real smoothing behaviour, including its lag (see [Logger Settings](#logger-settings)).
+The simulated signal is a 1.65 V bridge output with a slow load swing, 35-45 Hz vibration and a bump every 4 s. In each pair (1-2, 3-4, 5-6) the two gauges move in opposite directions, like tension and compression. The ADC is simulated scan by scan, like the firmware's `get_adc_voltage()`. Each logged value is the average of `--avg` 12-bit readings taken 60 µs apart, ending at the sample time, computed in single precision exactly as the firmware does. So the values have the real ADC step size (about 0.8 mV) and real smoothing behaviour, including its lag (see [Logger Settings](#logger-settings)).
 
 ### check_blf.py
 
@@ -388,26 +391,45 @@ python gps.py strain_logs/1_raw_blf/<log>.blf --volts                  # map raw
 
 ## Logger Settings
 
-The logger's sample rate and smoothing are set in the firmware, in `Core/Inc/logger_config.h` (in the `strain-gauge-logger` folder next to this one). Change them, rebuild and reflash. They can also be overridden from the build without editing the file, for example `-DLOG_SAMPLE_PERIOD_MS=5`.
+The logger's sample rate and anti-alias averaging are set in the firmware, in `Core/Inc/logger_config.h` (in the `strain-gauge-logger` folder next to this one). Change them, rebuild and reflash. They can also be overridden from the build without editing the file, for example `-DLOG_SAMPLE_PERIOD_MS=5`.
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `LOG_SAMPLE_PERIOD_MS` | `1` | Time between logged samples, in whole ms: 1 = 1 kHz, 5 = 200 Hz, 10 = 100 Hz. 1 ms is the fastest, because the sampling task runs on the 1 ms FreeRTOS tick. |
-| `ADC_AVG_SAMPLES` | `8` | Smoothing: how many back-to-back ADC scans are averaged into each logged value (1 to 1024; 1 = none). One scan of all six gauges takes 60 µs, so 8 scans smooth over 0.48 ms. |
+| `ADC_AVG_SAMPLES` | One sample period's worth (16 at 1 ms) | Anti-aliasing: how many back-to-back ADC scans are averaged into each logged value (1 to 1024). One scan of all six gauges takes 60 µs, so 16 scans cover 0.96 ms. By default it follows the sample period (83 scans at 5 ms, 166 at 10 ms, capped at 1024). |
 
-**Nothing to change on the PC.** Every log starts with a config record holding these values (see [File Formats](#1-raw-blf-strain_logs1_raw_blf)). `read_blf.py`, `pipeline.py` and the plots show the settings, and gap detection uses the log's own sample period. Logs from firmware older than the config record still work: the rate is inferred from the timestamps and the smoothing is shown as unknown.
+**Nothing to change on the PC.** Every log starts with a config record holding these values (see [File Formats](#1-raw-blf-strain_logs1_raw_blf)). `read_blf.py`, `pipeline.py` and the plots show the settings, and gap detection uses the log's own sample period. Logs from firmware older than the config record still work: the rate is inferred from the timestamps and the board averaging is shown as unknown.
 
 **Cross-check.** The rate is stated twice in every log: explicitly in the config record, and implicitly in the timestamp step between samples. `read_blf.py` compares them. If they agree, the summary says `config record and timestamps agree`. If they don't, it prints a `RATE MISMATCH` warning with both values, and `pipeline.py` gives a WARN. Gaps and duration then use the timestamps, since they show how the data is actually spaced; the record's value is kept in `log.period_mismatch`. A mismatch points to a firmware problem, so `check_blf.py` will also report the file as differing. To make dummy logs that match a non-default build, use `fake_blf.py --period-ms ... --avg ...`.
 
-**Smoothing trade-off.** More averaging lowers noise but also blurs fast events. And because the board averages the scans *leading up to* each sample, the logged value lags the real signal by about half the window. With the default dummy signal (35-45 Hz vibration), the error against the true signal is:
+**Why the board averages, and why only over one sample period.** The board's average isn't analysis smoothing. It's the anti-aliasing filter. A 1 kHz log can only represent frequencies below 500 Hz. Anything faster, such as vibration or electrical interference, folds back into the log as a fake lower-frequency signal, and nothing on the PC can separate that from real strain afterwards. Averaging the readings that span one sample period removes almost all of it:
 
-| `ADC_AVG_SAMPLES` | Window | Error (std) |
-|---|---|---|
-| 1 | 0.06 ms | 4.0 mV (all ADC noise) |
-| 8 | 0.48 ms | 1.7 mV |
-| 64 | 3.84 ms | 7.7 mV (lag and blurring dominate) |
+| Board averaging | 100 mV of 1,040 Hz interference appears in a 1 kHz log as |
+|---|---|
+| 1 scan (raw readings) | 100 mV of fake 40 Hz signal |
+| 8 scans, 0.48 ms (old default) | 64 mV |
+| 16 scans, 0.96 ms (default: one sample period) | 0.2 mV |
 
-Keep the window well below the period of the fastest vibration you care about. Usually that also means shorter than the sample period.
+A window of one sample period also doesn't blur anything the log can resolve. A longer window would, and it would add lag, since the board can only average the readings *before* each sample: the compiler warns if `ADC_AVG_SAMPLES` covers more than two sample periods. A short window (or 1, raw) lets aliasing through.
+
+The average is kept as a fraction, so it resolves finer than one ADC step (0.8 mV). Firmware before this change rounded it down to a whole step.
+
+**All other smoothing belongs on the PC**, where it can be chosen per analysis and never changes the logged data. See [Smoothing on the PC](#smoothing-on-the-pc).
+
+## Smoothing on the PC
+
+`pipeline.py --smooth WINDOW` (also `plot_strain.py --smooth`) smooths the plots, the report and the track map's colours with a **centred moving average** over the given time window, for example `5ms`, `20ms` or `0.05s`. The CSVs always keep the logged values.
+
+```bash
+python pipeline.py strain_logs/1_raw_blf/<log>.blf --smooth 20ms
+```
+
+- **No lag.** Centred means each point is averaged with as many samples after it as before it, so peaks stay at the right time. The board's average can't do this, because it can only look backwards.
+- **Respects gaps and edges.** It never averages across a gap in the data. Near the ends of the log, or of a gap, the window shrinks rather than inventing samples.
+- **Shows what it did.** The plots draw the smoothed line in blue over the logged data in faint grey, hover shows both, and the subtitle and pipeline summary state the window.
+- **From your own code:** `smoothing.smooth(t, columns, window_s)` returns smoothed copies (see `smoothing.py`).
+
+Choose the window from what you're looking for: a few milliseconds removes noise while keeping vibration, and 50-100 ms or more leaves only the slower load changes, such as cornering and braking.
 
 ## Using the Data in Python
 

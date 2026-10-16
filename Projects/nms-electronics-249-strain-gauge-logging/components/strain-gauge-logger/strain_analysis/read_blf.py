@@ -323,16 +323,16 @@ def describe_settings(log):
         rate += ", config record and timestamps agree"
     window = log.smoothing_window_s
     if window is None:
-        smooth = "smoothing unknown (no config record; firmware before it was configurable used 8 scans = 0.48 ms)"
+        smooth = "board averaging unknown (no config record; firmware before it was configurable used 8 scans = 0.48 ms)"
     else:
-        smooth = f"smoothing {log.adc_avg} ADC scan(s) = {window * 1000:g} ms"
+        smooth = f"board anti-alias average {log.adc_avg} ADC scan(s) = {window * 1000:g} ms"
     return f"{rate}; {smooth}"
 
 
 def short_settings(log):
     """Compact settings label for plot subtitles and summaries."""
     window = log.smoothing_window_s
-    smooth = f"{log.adc_avg}-scan smoothing ({window * 1000:g} ms)" if window else "smoothing unknown"
+    smooth = f"{log.adc_avg}-scan board average ({window * 1000:g} ms)" if window else "board averaging unknown"
     mismatch = " (RATE MISMATCH: see read_blf)" if log.period_mismatch else ""
     return f"{log.sample_rate_hz:g} Hz{mismatch}, {smooth}"
 

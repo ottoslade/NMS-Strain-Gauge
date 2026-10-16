@@ -28,6 +28,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # PNGs are drawn off-screen; interactive plots are HTML
 
+import numpy as np
 import pandas as pd
 
 import read_blf
@@ -39,6 +40,20 @@ VOLT_PLOT_DIR = os.path.join(HERE, "strain_logs", "3_voltage_plots")
 # Colours: one series per panel, so every panel uses the same line colour and
 # the panel title names the gauge. Text stays in neutral ink.
 LINE = "#2a78d6"
+RAW_UNDER = "#c3c2b7"  # logged data under a smoothed line
+
+
+def wrap_notes(notes, width=150, sep="    ·    "):
+    """Join subtitle notes, breaking onto a new line before a note that would overflow."""
+    lines, line = [], ""
+    for n in notes:
+        candidate = n if not line else line + sep + n
+        if line and len(candidate) > width:
+            lines.append(line)
+            line = n
+        else:
+            line = candidate
+    return lines + ([line] if line else [])
 ZERO = "#9a9890"
 GRID = "#e6e5e1"
 TEXT = "#0b0b0b"
@@ -95,31 +110,38 @@ def break_at_gaps(df, sample_s=None):
     return pd.concat([df, blanks]).sort_index(), int(at.sum()), missing
 
 
-def plot(df, title, out_path, placeholder=False, settings=None):
+def plot(df, title, out_path, placeholder=False, settings=None, smoothed=None, smooth_note=None):
     """Strain plot: microstrain columns (gaugeN_ue), with a zero line.
     settings: optional label for the logger settings, shown in the subtitle.
+    smoothed: optional DataFrame like df (see smoothing.py); drawn in blue over
+    the logged data, which is then shown faint grey. smooth_note describes it.
     Saves out_path (PNG); returns the interactive Plotly figure (see web_plots)."""
     notes = [settings] if settings else []
+    if smooth_note:
+        notes.append(smooth_note)
     if placeholder:
         notes.append("Placeholder hardware constants in strain.py: magnitudes are illustrative only")
-    return _plot_panels(df, "_ue", "Strain (µε)", True, title, out_path, notes)
+    return _plot_panels(df, "_ue", "Strain (µε)", True, title, out_path, notes, smoothed)
 
 
-def plot_voltage(df, title, out_path, settings=None):
-    """Voltage plot: raw gauge volts (gaugeN_v) as logged, no conversion.
-    Saves out_path (PNG); returns the interactive Plotly figure (see web_plots)."""
-    return _plot_panels(df, "_v", "Voltage (V)", False, title, out_path, [settings] if settings else [])
+def plot_voltage(df, title, out_path, settings=None, smoothed=None, smooth_note=None):
+    """Voltage plot: gauge volts (gaugeN_v) as logged, no conversion; optional
+    smoothed overlay as in plot(). Saves out_path (PNG); returns the Plotly figure."""
+    notes = [n for n in (settings, smooth_note) if n]
+    return _plot_panels(df, "_v", "Voltage (V)", False, title, out_path, notes, smoothed)
 
 
-def _plot_panels(df, suffix, ylabel, zero_line, title, out_path, notes):
+def _plot_panels(df, suffix, ylabel, zero_line, title, out_path, notes, smoothed=None):
     """Six panels, one per gauge, shared axes, line broken at gaps.
     Saves a static PNG (matplotlib); returns the interactive figure (Plotly)."""
     import web_plots
-    web_fig = web_plots.time_panels(df, suffix, ylabel, title, list(notes), zero_line)
+    web_fig = web_plots.time_panels(df, suffix, ylabel, title, list(notes), zero_line, smoothed)
 
     import matplotlib.pyplot as plt
 
     df, n_gaps, n_missing = break_at_gaps(df)
+    if smoothed is not None:
+        smoothed, _, _ = break_at_gaps(smoothed)
     if n_gaps:
         notes = notes + [f"Line breaks mark {n_gaps} gap(s): {n_missing} missing samples"]
 
@@ -130,7 +152,10 @@ def _plot_panels(df, suffix, ylabel, zero_line, title, out_path, notes):
     })
     df = df.rename(columns=lambda c: c.removesuffix(suffix).replace("gauge", "Gauge "))
     axes = df.plot(subplots=True, layout=(3, 2), sharex=True, sharey=True, legend=False,
-                   color=LINE, linewidth=1.0, figsize=(12, 8))
+                   color=RAW_UNDER if smoothed is not None else LINE, linewidth=1.0, figsize=(12, 8))
+    if smoothed is not None:  # smoothed line on top of the faint logged data
+        for ax, col in zip(axes.flat, smoothed.columns):
+            ax.plot(smoothed.index, smoothed[col], color=LINE, linewidth=1.3)
     for ax, name in zip(axes.flat, df.columns):
         ax.set_title(name, loc="left", fontsize=11, color=TEXT)
         if zero_line:
@@ -146,10 +171,11 @@ def _plot_panels(df, suffix, ylabel, zero_line, title, out_path, notes):
         ax.set_xlabel("Time (s)")
 
     fig = axes.flat[0].get_figure()
-    fig.tight_layout(rect=(0, 0, 1, 0.95 if notes else 0.965))
+    note_lines = wrap_notes(notes)
+    fig.tight_layout(rect=(0, 0, 1, 0.965 - 0.02 * len(note_lines)))
     fig.suptitle(title, x=0.01, y=0.99, ha="left", va="top", fontsize=13, color=TEXT)
-    if notes:
-        fig.text(0.01, 0.955, "    ·    ".join(notes), fontsize=9, color=TEXT_2, va="top")
+    if note_lines:
+        fig.text(0.01, 0.955, "\n".join(note_lines), fontsize=9, color=TEXT_2, va="top", linespacing=1.5)
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     return web_fig
@@ -166,6 +192,8 @@ def main():
     p.add_argument("--end", type=float, help="end time in seconds")
     p.add_argument("--show", action="store_true",
                    help="also open the interactive plots in the browser")
+    p.add_argument("--smooth", metavar="WINDOW",
+                   help="overlay a centred moving average, e.g. 5ms (see smoothing.py)")
     args = p.parse_args()
 
     import strain
@@ -189,10 +217,19 @@ def main():
         what = "Voltage" if args.volts else "Strain"
         title = f"{what} by gauge - {stem}" + (f" ({span})" if span else "")
         settings = read_blf.short_settings(read_blf.read_log(path)) if path.lower().endswith(".blf") else None
+        smoothed = note = None
+        if args.smooth:
+            import smoothing
+            window = smoothing.parse_window(args.smooth)
+            cols, n = smoothing.smooth(df.index.to_numpy(), [df[c] for c in df.columns], window)
+            smoothed = pd.DataFrame(dict(zip(df.columns, cols)), index=df.index)
+            period = float(np.median(np.diff(df.index.to_numpy()))) if len(df) > 1 else 0.001
+            note = smoothing.describe(window, n, period)
         if args.volts:
-            web_fig = plot_voltage(df, title, out, settings=settings)
+            web_fig = plot_voltage(df, title, out, settings=settings, smoothed=smoothed, smooth_note=note)
         else:
-            web_fig = plot(df, title, out, placeholder=not strain.CONSTANTS_VERIFIED, settings=settings)
+            web_fig = plot(df, title, out, placeholder=not strain.CONSTANTS_VERIFIED, settings=settings,
+                           smoothed=smoothed, smooth_note=note)
         import web_plots
         html = web_plots.save_page(web_fig, os.path.splitext(out)[0] + ".html")
         pages.append(html)

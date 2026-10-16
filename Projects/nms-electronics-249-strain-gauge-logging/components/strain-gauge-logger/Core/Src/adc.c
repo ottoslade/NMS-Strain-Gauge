@@ -335,14 +335,15 @@ void adcInit(void)
  * @param buffer        ADCx DMA buffer, channel-interleaved; written by DMA in the background
  * @param buffer_length Total elements in the buffer (num_channels * samples per channel)
  * @param num_channels  Number of channels in the ADCx scan
- * @return              Average raw ADC count, or 0 if the rank or buffer is invalid
+ * @return              Average raw ADC count as a fraction (averaging N readings resolves
+ *                      finer than one count, so it is not rounded), or 0 if invalid
  */
-static uint32_t calculate_channel_average(uint32_t rank, const volatile uint16_t *buffer,
-                                          uint32_t buffer_length, uint32_t num_channels)
+static float calculate_channel_average(uint32_t rank, const volatile uint16_t *buffer,
+                                       uint32_t buffer_length, uint32_t num_channels)
 {
   if (buffer == NULL || num_channels == 0 || rank < 1 || rank > num_channels)
   {
-    return 0;
+    return 0.0f;
   }
 
   uint32_t sum = 0;
@@ -354,16 +355,16 @@ static uint32_t calculate_channel_average(uint32_t rank, const volatile uint16_t
   uint32_t num_samples = buffer_length / num_channels;
   if (num_samples == 0)
   {
-    return 0;
+    return 0.0f;
   }
-  return sum / num_samples;
+  return (float)sum / (float)num_samples;
 }
 
-uint32_t get_adc_value(int channel)
+static float channel_average(int channel)
 {
   if (channel < 1)
   {
-    return 0;
+    return 0.0f;
   }
   return calculate_channel_average((uint32_t)channel,
                                    adc1Buffer,
@@ -371,8 +372,14 @@ uint32_t get_adc_value(int channel)
                                    hadc1.Init.NbrOfConversion);
 }
 
+uint32_t get_adc_value(int channel)
+{
+  return (uint32_t)(channel_average(channel) + 0.5f); // nearest whole count
+}
+
 float get_adc_voltage(int channel)
 {
-  return (float)get_adc_value(channel) * (ADC_TOTAL_VOLTS / ADC_TOTAL_BITS);
+  // from the fractional average, keeping the extra resolution averaging gives
+  return channel_average(channel) * (ADC_TOTAL_VOLTS / ADC_TOTAL_BITS);
 }
 /* USER CODE END 1 */

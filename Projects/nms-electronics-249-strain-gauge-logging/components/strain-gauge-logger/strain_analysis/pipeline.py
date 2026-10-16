@@ -5,6 +5,7 @@ Run the whole analysis pipeline on one .blf log and report each step.
     python pipeline.py path/to/strain_gauge_log_000.blf --plot voltage   # voltage only
     python pipeline.py path/to/strain_gauge_log_000.blf --plot strain    # strain only
     python pipeline.py path/to/strain_gauge_log_000.blf --gps track.csv  # add GPS track maps
+    python pipeline.py path/to/strain_gauge_log_000.blf --smooth 5ms     # smooth the plots
 
 The logger's sample rate and smoothing are read from the log itself (see
 Core/Inc/logger_config.h), shown in the summary and on every plot.
@@ -26,6 +27,10 @@ GPS and logger clocks are lined up; --gps-offset corrects a known clock differen
 
 --plot voltage skips the strain steps entirely, so it doesn't depend on the
 hardware constants in strain.py.
+
+--smooth WINDOW (e.g. 5ms) smooths the plots, the report and the track map
+with a centred moving average (see smoothing.py): the smoothed line is drawn
+over the logged data, shown faint. The CSVs always keep the logged values.
 
 Every plot is saved as a PNG, and all of them go into one interactive report
 page (Plotly) that opens in the browser at the end. Tabs (or keys 1-3) choose the
@@ -50,11 +55,13 @@ import check_blf
 import gps
 import web_plots
 import plot_strain
+import smoothing
 import read_blf
 import strain
 
 PASS, WARN, FAIL, SKIP = "PASS", "WARN", "FAIL", "SKIP"
 HERE = os.path.dirname(os.path.abspath(__file__))
+SMOOTH = None  # (window_s, n, note) from --smooth
 SHOW = True  # open the report in the browser at the end (off with --no-show)
 REPORT_DIR = os.path.join(HERE, "strain_logs", "8_reports")
 
@@ -98,12 +105,21 @@ def step_check(path, log):
     return FAIL, msg
 
 
+def smoothed_copy(log, df):
+    """Smoothed copy of a per-gauge DataFrame if --smooth was given, else None."""
+    if not SMOOTH:
+        return None
+    cols, _ = smoothing.smooth(log.t, [df[c] for c in df.columns], SMOOTH[0], log.sample_period_s)
+    return pd.DataFrame(dict(zip(df.columns, cols)), index=df.index)
+
+
 def step_voltage_plot(log, stem):
     df = pd.DataFrame({f"gauge{g}_v": col for g, col in enumerate(log.gauges, 1)},
                       index=pd.Index(log.t, name="t_s"))
     os.makedirs(plot_strain.VOLT_PLOT_DIR, exist_ok=True)
     out = os.path.join(plot_strain.VOLT_PLOT_DIR, f"{stem}.png")
-    fig = plot_strain.plot_voltage(df, f"Voltage by gauge - {stem}", out, settings=read_blf.short_settings(log))
+    fig = plot_strain.plot_voltage(df, f"Voltage by gauge - {stem}", out, settings=read_blf.short_settings(log),
+                                   smoothed=smoothed_copy(log, df), smooth_note=SMOOTH and SMOOTH[2])
     return PASS, short(out), ("Voltage", fig)
 
 
@@ -131,7 +147,8 @@ def step_strain_plot(log, ue, stem):
     os.makedirs(plot_strain.PLOT_DIR, exist_ok=True)
     out = os.path.join(plot_strain.PLOT_DIR, f"{stem}.png")
     fig = plot_strain.plot(df, f"Strain by gauge - {stem}", out, placeholder=not strain.CONSTANTS_VERIFIED,
-                     settings=read_blf.short_settings(log))
+                           settings=read_blf.short_settings(log),
+                           smoothed=smoothed_copy(log, df), smooth_note=SMOOTH and SMOOTH[2])
     return PASS, short(out), ("Strain", fig)
 
 
@@ -152,7 +169,16 @@ def step_gps(log, stem, gps_path, offset, values, cols, suffix):
     df.to_csv(csv_out, float_format="%.7g")
     png = os.path.join(gps.MAP_DIR, f"{stem}{'' if kind == 'strain' else '_volts'}.png")
     what = "Strain" if kind == "strain" else "Voltage"
-    fig = gps.plot_map(df, info, f"{what} around the track - {stem}", png, suffix, settings=read_blf.short_settings(log))
+    label = read_blf.short_settings(log)
+    map_df = df
+    if SMOOTH:  # map colours from the smoothed values; the CSV above keeps the logged ones
+        map_df = df.copy()
+        gauge_cols = [c for c in df.columns if c.endswith(suffix)]
+        smoothed, _ = smoothing.smooth(log.t, [df[c].to_numpy() for c in gauge_cols], SMOOTH[0], log.sample_period_s)
+        for c, v in zip(gauge_cols, smoothed):
+            map_df[c] = v
+        label += "  ·  " + SMOOTH[2]
+    fig = gps.plot_map(map_df, info, f"{what} around the track - {stem}", png, suffix, settings=label)
     section = ("Track map" if kind == "strain" else "Track map (volts)", fig)
 
     problems = []
@@ -175,10 +201,18 @@ def main():
     p.add_argument("--no-gps", action="store_true", help="skip the GPS step even if a matching file exists")
     p.add_argument("--no-show", action="store_true",
                    help="only save the plots; don't open them in the browser")
+    p.add_argument("--smooth", metavar="WINDOW",
+                   help="smooth the plots with a centred moving average, e.g. 5ms (CSVs stay as logged)")
     p.add_argument("--gps-offset", type=float, default=0.0,
                    help="seconds to add to GPS times (positive = GPS later); default 0")
     args = p.parse_args()
-    global SHOW
+    global SHOW, SMOOTH
+    smooth_window = None
+    if args.smooth:
+        try:
+            smooth_window = smoothing.parse_window(args.smooth)
+        except ValueError as e:
+            p.error(str(e))
     SHOW = not args.no_show
     path = args.log
     if not os.path.isfile(path):
@@ -199,6 +233,11 @@ def main():
     print(f"== 1/{len(steps)} read_blf")
     status, msg, log = step_read(path)
     results.append(("read_blf", status, msg))
+
+    if status != FAIL and smooth_window:
+        n = smoothing.window_samples(smooth_window, log.sample_period_s)
+        SMOOTH = (smooth_window, n, smoothing.describe(smooth_window, n, log.sample_period_s))
+        results.append(("smoothing", PASS, SMOOTH[2] + " on plots and report; CSVs keep the logged values"))
 
     if status != FAIL:
         stem = read_blf.session_stem(path, log)  # one base name for every output

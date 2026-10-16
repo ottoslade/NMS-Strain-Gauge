@@ -17,22 +17,32 @@
 #define LOG_SAMPLE_PERIOD_MS 1
 #endif
 
-/* ---- Smoothing -------------------------------------------------------------
- * Number of back-to-back ADC scans averaged into each logged reading.
- * The ADC scans all six gauges continuously; each scan takes ADC_SCAN_PERIOD_US,
- * so a logged value is the average over ADC_AVG_SAMPLES * ADC_SCAN_PERIOD_US
- * (8 * 60 us = 0.48 ms by default). 1 = no smoothing. Larger values reduce
- * noise but blur fast events; keep the window shorter than the sample period
- * unless you deliberately want overlapping averages. */
-#ifndef ADC_AVG_SAMPLES
-#define ADC_AVG_SAMPLES 8
-#endif
-
 /* Time for one ADC scan of all six gauges. Derived from the ADC set-up, not a
  * setting: 16 MHz PCLK2 / 4 = 4 MHz ADC clock; (28 sampling + 12 conversion)
  * cycles = 10 us per channel; x 6 channels = 60 us. Update this if the clock
  * tree, ADC prescaler, sampling time or channel count changes in CubeMX. */
 #define ADC_SCAN_PERIOD_US 60
+
+/* ---- Anti-aliasing average --------------------------------------------------
+ * Number of back-to-back ADC scans averaged into each logged reading. This is
+ * not analysis smoothing (do that on the PC: pipeline.py --smooth); it is the
+ * anti-aliasing filter that stops noise faster than the sample rate folding
+ * back into the log as fake low-frequency signal, which nothing on the PC can
+ * undo.
+ *
+ * Default: as many scans as fit in one sample period (16 scans = 0.96 ms at
+ * 1 ms, 83 = 4.98 ms at 5 ms ...). Averaging over exactly one sample period is
+ * the best a plain average can do: maximum noise reduction and aliasing
+ * suppression, with no blurring below the logged bandwidth. Override with a
+ * number if you need to (1 = a single instantaneous reading per sample). */
+#define ADC_AVG_SAMPLES_ONE_PERIOD ((LOG_SAMPLE_PERIOD_MS * 1000) / ADC_SCAN_PERIOD_US)
+#ifndef ADC_AVG_SAMPLES
+#if ADC_AVG_SAMPLES_ONE_PERIOD > 1024
+#define ADC_AVG_SAMPLES 1024
+#else
+#define ADC_AVG_SAMPLES ADC_AVG_SAMPLES_ONE_PERIOD
+#endif
+#endif
 
 /* ---- Config record in the log ---------------------------------------------
  * Each .blf starts with one CAN message object carrying these settings.
@@ -50,6 +60,9 @@
 #endif
 #if ADC_AVG_SAMPLES < 1 || ADC_AVG_SAMPLES > 1024
 #error "ADC_AVG_SAMPLES must be between 1 and 1024"
+#endif
+#if ADC_AVG_SAMPLES * ADC_SCAN_PERIOD_US > 2 * LOG_SAMPLE_PERIOD_MS * 1000
+#warning "ADC_AVG_SAMPLES averages over more than two sample periods: logged values will lag and blur, and each sample costs more CPU"
 #endif
 #if ADC_SCAN_PERIOD_US < 1 || ADC_SCAN_PERIOD_US > 255
 #error "ADC_SCAN_PERIOD_US must fit in one byte of the config record"
