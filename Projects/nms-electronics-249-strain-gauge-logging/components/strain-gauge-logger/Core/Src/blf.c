@@ -112,6 +112,7 @@ static FRESULT blf_write_new_container()
 {
   container.baseHeader.objectSize = sizeof(BLF_Container);
   container_fp = f_size(&SDFile);
+  header.fileSize += sizeof(BLF_Container); // the container is part of the file too
   return blf_update_container();
 }
 
@@ -186,7 +187,9 @@ static void blf_log_task(void *arg)
     // create and write new a new container when we reach the uint32_t limit
     if (container.baseHeader.objectSize >= 559240 * msg_size)
     {
+      blf_update_container(); // finalize the old container's size first
       blf_write_new_container();
+      blf_update_header();
       f_sync(&SDFile);
     }
 
@@ -200,12 +203,12 @@ static void blf_log_task(void *arg)
       header.fileSize += msg_size;
       header.countObjects += STREAM_BUFFER_TRIGGER;
       container.baseHeader.objectSize += msg_size;
-      blf_update_header();
-      blf_update_container();
 
       if (xTaskGetTickCount() - last_sync >= pdMS_TO_TICKS(1000))
       { // sync every 1s
         last_sync = xTaskGetTickCount();
+        blf_update_header();
+        blf_update_container();
         f_sync(&SDFile);
       }
     }
